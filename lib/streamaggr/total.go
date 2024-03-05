@@ -104,6 +104,7 @@ func (as *totalAggrState) pushSamples(samples []pushSample) {
 					}
 				}
 				lv.value = s.value
+				lv.timestamp = s.timestamp
 				lv.deleteDeadline = deleteDeadline
 				sv.lastValues[inputKey] = lv
 				sv.deleteDeadline = deleteDeadline
