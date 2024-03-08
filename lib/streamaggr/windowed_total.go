@@ -49,8 +49,8 @@ type windowedTotalStateValue struct {
 }
 
 type window struct {
-	endTimestamp int64
-	delta        float64
+	timestamp int64
+	total     float64
 }
 
 type windowedLastValueState struct {
@@ -98,18 +98,18 @@ func (as *windowedTotalAggrState) pushDelta(sv *windowedTotalStateValue, delta f
 
 	// check latest window
 	w := sv.windows[len(sv.windows)-1]
-	if windowTimestamp == w.endTimestamp {
+	if windowTimestamp == w.timestamp {
 		// window found
-		w.delta += delta
-	} else if windowTimestamp > w.endTimestamp {
+		w.total += delta
+	} else if windowTimestamp > w.timestamp {
 		// window needs to be created
 		w := window{windowTimestamp, delta}
 		sv.windows = append(sv.windows, &w)
 	} else {
 		// otherwise, check older windows
 		for _, w := range sv.windows[:len(sv.windows)-1] {
-			if windowTimestamp == w.endTimestamp {
-				w.delta += delta
+			if windowTimestamp == w.timestamp {
+				w.total += delta
 			}
 		}
 	}
@@ -206,8 +206,8 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 		sv.mu.Lock()
 		windowsToFlush := sv.windows[:len(sv.windows)-1]
 		for _, w := range windowsToFlush {
-			sv.total += w.delta
-			w.delta = sv.total // hack
+			sv.total += w.total
+			w.total = sv.total
 		}
 		sv.windows = sv.windows[len(sv.windows)-1:]
 
@@ -224,7 +224,7 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 		if !deleted {
 			key := k.(string)
 			for _, w := range windowsToFlush {
-				ctx.appendSeries(key, as.suffix, w.endTimestamp, w.delta)
+				ctx.appendSeries(key, as.suffix, w.timestamp, w.total)
 			}
 		}
 		return true
