@@ -2,6 +2,7 @@ package streamaggr
 
 import (
 	"math"
+	"slices"
 	"sync"
 	"time"
 
@@ -23,6 +24,9 @@ type windowedTotalAggrState struct {
 	// The time interval
 	intervalSecs uint64
 
+	// The maximum time a sample can be delayed in seconds.
+	maxDelayedSampleSecs uint64
+
 	// Time series state is dropped if no new samples are received during stalenessSecs.
 	//
 	// Aslo, the first sample per each new series is ignored during stalenessSecs even if keepFirstSample is set.
@@ -42,15 +46,10 @@ type windowedTotalAggrState struct {
 type windowedTotalStateValue struct {
 	mu             sync.Mutex
 	lastValues     map[string]windowedLastValueState
-	windows        []*window // from oldest ... newest
+	windows        map[int64]float64
 	total          float64
 	deleteDeadline uint64
 	deleted        bool
-}
-
-type window struct {
-	timestamp int64
-	total     float64
 }
 
 type windowedLastValueState struct {
@@ -72,6 +71,7 @@ func newWindowedTotalAggrState(interval time.Duration, stalenessInterval time.Du
 		resetTotalOnFlush:         resetTotalOnFlush,
 		keepFirstSample:           keepFirstSample,
 		intervalSecs:              intervalSecs,
+		maxDelayedSampleSecs:      15, // TODO: parameterize
 		stalenessSecs:             stalenessSecs,
 		ignoreFirstSampleDeadline: ignoreFirstSampleDeadline,
 		ignoreOutOfOrderSamples:   ignoreOutOfOrderSamples,
@@ -86,41 +86,26 @@ func roundUp(n, r int64) int64 {
 	return r - (n % r) + n
 }
 
-func (as *windowedTotalAggrState) pushDelta(sv *windowedTotalStateValue, delta float64, timestamp int64) {
-	windowTimestamp := roundUp(timestamp, int64(as.intervalSecs)*1000)
-
-	// no windows yet, create a new window
-	if len(sv.windows) == 0 {
-		w := window{windowTimestamp, delta}
-		sv.windows = []*window{&w}
-		return
+func (as *windowedTotalAggrState) pushSample(sv *windowedTotalStateValue, delta float64, timestamp int64) {
+	key := roundUp(timestamp, int64(as.intervalSecs)*1000)
+	if _, ok := sv.windows[key]; !ok {
+		sv.windows[key] = 0
 	}
-
-	// check latest window
-	w := sv.windows[len(sv.windows)-1]
-	if windowTimestamp == w.timestamp {
-		// window found
-		w.total += delta
-	} else if windowTimestamp > w.timestamp {
-		// window needs to be created
-		w := window{windowTimestamp, delta}
-		sv.windows = append(sv.windows, &w)
-	} else {
-		// otherwise, check older windows
-		for _, w := range sv.windows[:len(sv.windows)-1] {
-			if windowTimestamp == w.timestamp {
-				w.total += delta
-			}
-		}
-	}
+	sv.windows[key] += delta
 }
 
 func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 	currentTime := fasttime.UnixTimestamp()
+	tooLateDeadline := currentTime - as.maxDelayedSampleSecs
 	deleteDeadline := currentTime + as.stalenessSecs
 	keepFirstSample := as.keepFirstSample && currentTime > as.ignoreFirstSampleDeadline
 	for i := range samples {
 		s := &samples[i]
+		if uint64(s.timestamp) < tooLateDeadline || uint64(s.timestamp) > currentTime {
+			// sample is too old or too new
+			continue
+		}
+
 		inputKey, outputKey := getInputOutputKey(s.key)
 
 	again:
@@ -145,10 +130,10 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 			if !as.ignoreOutOfOrderSamples || !outOfOrder {
 				if ok || keepFirstSample {
 					if s.value >= lv.value {
-						as.pushDelta(sv, s.value-lv.value, s.timestamp)
+						as.pushSample(sv, s.value-lv.value, s.timestamp)
 					} else {
 						// counter reset
-						as.pushDelta(sv, s.value, s.timestamp)
+						as.pushSample(sv, s.value, s.timestamp)
 					}
 				}
 				lv.value = s.value
@@ -197,6 +182,7 @@ func (as *windowedTotalAggrState) removeOldEntries(currentTime uint64) {
 
 func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 	currentTime := fasttime.UnixTimestamp()
+	tooLateDeadline := currentTime - as.maxDelayedSampleSecs
 
 	as.removeOldEntries(currentTime)
 
@@ -205,16 +191,27 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 		sv := v.(*windowedTotalStateValue)
 		sv.mu.Lock()
 
-		if len(sv.windows) == 0 {
-			sv.mu.Unlock()
-			return true
+		var flushTimestamps []int64 // TODO: optimize
+		for timestamp := range sv.windows {
+			if uint64(timestamp) < tooLateDeadline {
+				flushTimestamps = append(flushTimestamps, timestamp)
+			}
 		}
-		windowsToFlush := sv.windows[:len(sv.windows)-1]
-		for _, w := range windowsToFlush {
-			sv.total += w.total
-			w.total = sv.total
+		slices.SortFunc(flushTimestamps, func(a, b int64) int {
+			if flushTimestamps[a] < flushTimestamps[b] {
+				return -1
+			} else if flushTimestamps[a] > flushTimestamps[b] {
+				return 1
+			}
+			return 0
+		})
+
+		var flushTotals []float64
+		for _, timestamp := range flushTimestamps {
+			sv.total += sv.windows[timestamp]
+			flushTotals = append(flushTotals, sv.total)
+			delete(sv.windows, timestamp)
 		}
-		sv.windows = sv.windows[len(sv.windows)-1:]
 
 		if resetState {
 			if as.resetTotalOnFlush {
@@ -228,8 +225,8 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 		sv.mu.Unlock()
 		if !deleted {
 			key := k.(string)
-			for _, w := range windowsToFlush {
-				ctx.appendSeries(key, as.suffix, w.timestamp, w.total)
+			for i, timestamp := range flushTimestamps {
+				ctx.appendSeries(key, as.suffix, timestamp, flushTotals[i])
 			}
 		}
 		return true
