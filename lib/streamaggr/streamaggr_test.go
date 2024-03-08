@@ -163,7 +163,9 @@ func TestPushDelta(t *testing.T) {
 		NoAlignFlushToInterval: true,
 	}
 	pushFunc := func(tss []prompbmarshal.TimeSeries) {
-		fmt.Println(tss)
+		for _, ts := range tss {
+			fmt.Printf("flushed: %v\n", ts)
+		}
 	}
 	a, err := newAggregatorsFromData([]byte(config), pushFunc, opts)
 	if err != nil {
@@ -181,12 +183,12 @@ foo{bar="baz"} 4 1000000052000
 	_ = a.Push(tssInput, nil)
 
 	for _, ag := range a.as {
-		fmt.Println("flushing")
 		ag.flush(pushFunc, time.Duration(123*float64(time.Second)), false)
 	}
 
 	inputMetrics = `
 foo{bar="baz"} 7 1000000067000
+foo{bar="baz"} 8 1000000071000
 `
 
 	// Push the inputMetrics to Aggregators
@@ -194,10 +196,20 @@ foo{bar="baz"} 7 1000000067000
 	_ = a.Push(tssInput, nil)
 
 	for _, ag := range a.as {
-		fmt.Println("flushing")
 		ag.flush(pushFunc, time.Duration(123*float64(time.Second)), false)
 	}
 
+	inputMetrics = `
+foo{bar="baz"} 10 1000000085000
+`
+
+	// Push the inputMetrics to Aggregators
+	tssInput = mustParsePromMetrics(inputMetrics)
+	_ = a.Push(tssInput, nil)
+
+	for _, ag := range a.as {
+		ag.flush(pushFunc, time.Duration(123*float64(time.Second)), false)
+	}
 }
 
 func TestAggregatorsEqual(t *testing.T) {
