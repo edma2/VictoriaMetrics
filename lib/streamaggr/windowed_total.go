@@ -206,7 +206,8 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 		sv.mu.Lock()
 		windowsToFlush := sv.windows[:len(sv.windows)-1]
 		for _, w := range windowsToFlush {
-			w.delta = sv.total + w.delta // hack
+			sv.total += w.delta
+			w.delta = sv.total // hack
 		}
 		sv.windows = sv.windows[len(sv.windows)-1:]
 
