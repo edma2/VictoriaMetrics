@@ -204,6 +204,11 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 	m.Range(func(k, v interface{}) bool {
 		sv := v.(*windowedTotalStateValue)
 		sv.mu.Lock()
+
+		if len(sv.windows) == 0 {
+			sv.mu.Unlock()
+			return true
+		}
 		windowsToFlush := sv.windows[:len(sv.windows)-1]
 		for _, w := range windowsToFlush {
 			sv.total += w.total
