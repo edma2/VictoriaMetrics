@@ -42,7 +42,7 @@ type windowedTotalAggrState struct {
 type windowedTotalStateValue struct {
 	mu             sync.Mutex
 	lastValues     map[string]windowedLastValueState
-	windows        []window // from oldest ... newest
+	windows        []*window // from oldest ... newest
 	total          float64
 	deleteDeadline uint64
 	deleted        bool
@@ -91,7 +91,8 @@ func (as *windowedTotalAggrState) pushDelta(sv *windowedTotalStateValue, delta f
 
 	// no windows yet, create a new window
 	if len(sv.windows) == 0 {
-		sv.windows = []window{{windowTimestamp, delta}}
+		w := window{windowTimestamp, delta}
+		sv.windows = []*window{&w}
 		return
 	}
 
@@ -103,7 +104,7 @@ func (as *windowedTotalAggrState) pushDelta(sv *windowedTotalStateValue, delta f
 	} else if windowTimestamp > w.endTimestamp {
 		// window needs to be created
 		w := window{windowTimestamp, delta}
-		sv.windows = append(sv.windows, w)
+		sv.windows = append(sv.windows, &w)
 	} else {
 		// otherwise, check older windows
 		for _, w := range sv.windows[:len(sv.windows)-1] {
