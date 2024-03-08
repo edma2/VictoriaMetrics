@@ -5,8 +5,6 @@ import (
 	"slices"
 	"sync"
 	"time"
-
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fasttime"
 )
 
 // windowedTotalAggrState calculates output=total, e.g. the summary counter over input counters.
@@ -41,6 +39,9 @@ type windowedTotalAggrState struct {
 	// Ignore samples which were older than the last seen sample. This is preferable to treating it as a
 	// counter reset.
 	ignoreOutOfOrderSamples bool
+
+	// Used for testing.
+	getUnixTimestamp func() uint64
 }
 
 type windowedTotalStateValue struct {
@@ -58,10 +59,10 @@ type windowedLastValueState struct {
 	deleteDeadline uint64
 }
 
-func newWindowedTotalAggrState(interval time.Duration, stalenessInterval time.Duration, resetTotalOnFlush, keepFirstSample bool, ignoreOutOfOrderSamples bool) *windowedTotalAggrState {
+func newWindowedTotalAggrState(interval time.Duration, stalenessInterval time.Duration, resetTotalOnFlush, keepFirstSample bool, ignoreOutOfOrderSamples bool, getUnixTimestamp func() uint64) *windowedTotalAggrState {
 	stalenessSecs := roundDurationToSecs(stalenessInterval)
 	intervalSecs := roundDurationToSecs(interval)
-	ignoreFirstSampleDeadline := fasttime.UnixTimestamp() + stalenessSecs
+	ignoreFirstSampleDeadline := getUnixTimestamp() + stalenessSecs
 	suffix := "total"
 	if resetTotalOnFlush {
 		suffix = "increase"
@@ -75,6 +76,7 @@ func newWindowedTotalAggrState(interval time.Duration, stalenessInterval time.Du
 		stalenessSecs:             stalenessSecs,
 		ignoreFirstSampleDeadline: ignoreFirstSampleDeadline,
 		ignoreOutOfOrderSamples:   ignoreOutOfOrderSamples,
+		getUnixTimestamp:          getUnixTimestamp,
 	}
 }
 
@@ -95,7 +97,7 @@ func (as *windowedTotalAggrState) pushSample(sv *windowedTotalStateValue, delta 
 }
 
 func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
-	currentTime := fasttime.UnixTimestamp()
+	currentTime := as.getUnixTimestamp()
 	tooLateDeadline := currentTime - as.maxDelayedSampleSecs
 	deleteDeadline := currentTime + as.stalenessSecs
 	keepFirstSample := as.keepFirstSample && currentTime > as.ignoreFirstSampleDeadline
@@ -181,7 +183,7 @@ func (as *windowedTotalAggrState) removeOldEntries(currentTime uint64) {
 }
 
 func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
-	currentTime := fasttime.UnixTimestamp()
+	currentTime := as.getUnixTimestamp()
 	tooLateDeadline := currentTime - as.maxDelayedSampleSecs
 
 	as.removeOldEntries(currentTime)

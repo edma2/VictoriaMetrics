@@ -15,6 +15,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/cgroup"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/encoding"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/envtemplate"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fasttime"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs/fscore"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
@@ -103,6 +104,9 @@ type Options struct {
 	//
 	// This option can be overriden individually per each aggregation via keep_metric_names option.
 	KeepMetricNames bool
+
+	// Use a custom function for getting timestamps. Just used for testing.
+	UnixTimestampFunc func() uint64
 }
 
 // Config is a configuration for a single stream aggregation.
@@ -458,6 +462,11 @@ func newAggregator(cfg *Config, pushFunc PushFunc, ms *metrics.Set, opts *Option
 		}
 	}
 
+	getUnixTimestamp := opts.UnixTimestampFunc
+	if getUnixTimestamp == nil {
+		getUnixTimestamp = fasttime.UnixTimestamp
+	}
+
 	// initialize outputs list
 	if len(cfg.Outputs) == 0 {
 		return nil, fmt.Errorf("`outputs` list must contain at least a single entry from the list %s; "+
@@ -495,7 +504,7 @@ func newAggregator(cfg *Config, pushFunc PushFunc, ms *metrics.Set, opts *Option
 		case "total_prometheus":
 			aggrStates[i] = newTotalAggrState(stalenessInterval, false, false, true)
 		case "total_windowed_prometheus":
-			aggrStates[i] = newWindowedTotalAggrState(interval, stalenessInterval, false, false, true)
+			aggrStates[i] = newWindowedTotalAggrState(interval, stalenessInterval, false, false, true, getUnixTimestamp)
 		case "increase":
 			aggrStates[i] = newTotalAggrState(stalenessInterval, true, true, false)
 		case "increase_prometheus":
