@@ -20,6 +20,9 @@ type windowedTotalAggrState struct {
 	// Whether to take into account the first sample in new time series when calculating the output value.
 	keepFirstSample bool
 
+	// The time interval
+	intervalSecs uint64
+
 	// Time series state is dropped if no new samples are received during stalenessSecs.
 	//
 	// Aslo, the first sample per each new series is ignored during stalenessSecs even if keepFirstSample is set.
@@ -39,9 +42,15 @@ type windowedTotalAggrState struct {
 type windowedTotalStateValue struct {
 	mu             sync.Mutex
 	lastValues     map[string]windowedLastValueState
+	windows        []window // from oldest ... newest
 	total          float64
 	deleteDeadline uint64
 	deleted        bool
+}
+
+type window struct {
+	endTimestamp int64
+	delta        float64
 }
 
 type windowedLastValueState struct {
@@ -50,8 +59,9 @@ type windowedLastValueState struct {
 	deleteDeadline uint64
 }
 
-func newWindowedTotalAggrState(stalenessInterval time.Duration, resetTotalOnFlush, keepFirstSample bool, ignoreOutOfOrderSamples bool) *windowedTotalAggrState {
+func newWindowedTotalAggrState(interval time.Duration, stalenessInterval time.Duration, resetTotalOnFlush, keepFirstSample bool, ignoreOutOfOrderSamples bool) *windowedTotalAggrState {
 	stalenessSecs := roundDurationToSecs(stalenessInterval)
+	intervalSecs := roundDurationToSecs(interval)
 	ignoreFirstSampleDeadline := fasttime.UnixTimestamp() + stalenessSecs
 	suffix := "total"
 	if resetTotalOnFlush {
@@ -61,9 +71,46 @@ func newWindowedTotalAggrState(stalenessInterval time.Duration, resetTotalOnFlus
 		suffix:                    suffix,
 		resetTotalOnFlush:         resetTotalOnFlush,
 		keepFirstSample:           keepFirstSample,
+		intervalSecs:              intervalSecs,
 		stalenessSecs:             stalenessSecs,
 		ignoreFirstSampleDeadline: ignoreFirstSampleDeadline,
 		ignoreOutOfOrderSamples:   ignoreOutOfOrderSamples,
+	}
+}
+
+// roundUp rounds up n to the nearest r.
+func roundUp(n, r int64) int64 {
+	if n%r == 0 {
+		return n
+	}
+	return r - (n % r) + n
+}
+
+func (as *windowedTotalAggrState) pushDelta(sv *windowedTotalStateValue, delta float64, timestamp int64) {
+	windowTimestamp := roundUp(timestamp, int64(as.intervalSecs)*1000)
+
+	// no windows yet, create a new window
+	if len(sv.windows) == 0 {
+		sv.windows = []window{{windowTimestamp, delta}}
+		return
+	}
+
+	// check latest window
+	w := sv.windows[len(sv.windows)-1]
+	if windowTimestamp == w.endTimestamp {
+		// window found
+		w.delta += delta
+	} else if windowTimestamp > w.endTimestamp {
+		// window needs to be created
+		w := window{windowTimestamp, delta}
+		sv.windows = append(sv.windows, w)
+	} else {
+		// otherwise, check older windows
+		for _, w := range sv.windows[:len(sv.windows)-1] {
+			if windowTimestamp == w.endTimestamp {
+				w.delta += delta
+			}
+		}
 	}
 }
 
@@ -97,10 +144,10 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 			if !as.ignoreOutOfOrderSamples || !outOfOrder {
 				if ok || keepFirstSample {
 					if s.value >= lv.value {
-						sv.total += s.value - lv.value
+						as.pushDelta(sv, s.value-lv.value, s.timestamp)
 					} else {
 						// counter reset
-						sv.total += s.value
+						as.pushDelta(sv, s.value, s.timestamp)
 					}
 				}
 				lv.value = s.value
@@ -149,7 +196,6 @@ func (as *windowedTotalAggrState) removeOldEntries(currentTime uint64) {
 
 func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 	currentTime := fasttime.UnixTimestamp()
-	currentTimeMsec := int64(currentTime) * 1000
 
 	as.removeOldEntries(currentTime)
 
@@ -157,7 +203,12 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 	m.Range(func(k, v interface{}) bool {
 		sv := v.(*windowedTotalStateValue)
 		sv.mu.Lock()
-		total := sv.total
+		windowsToFlush := sv.windows[:len(sv.windows)-1]
+		for _, w := range windowsToFlush {
+			w.delta = sv.total + w.delta // hack
+		}
+		sv.windows = sv.windows[len(sv.windows)-1:]
+
 		if resetState {
 			if as.resetTotalOnFlush {
 				sv.total = 0
@@ -170,7 +221,9 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 		sv.mu.Unlock()
 		if !deleted {
 			key := k.(string)
-			ctx.appendSeries(key, as.suffix, currentTimeMsec, total)
+			for _, w := range windowsToFlush {
+				ctx.appendSeries(key, as.suffix, w.endTimestamp, w.delta)
+			}
 		}
 		return true
 	})
