@@ -156,6 +156,7 @@ func TestAggregatorsFailure(t *testing.T) {
 func TestWindowedAggregator(t *testing.T) {
 	config := `
 - interval: 15s
+  without: [pod]
   outputs: [total_windowed_prometheus]
 `
 	opts := &Options{
@@ -173,9 +174,12 @@ func TestWindowedAggregator(t *testing.T) {
 	}
 
 	inputMetrics := `
-foo{bar="baz"} 1 1000000022000
-foo{bar="baz"} 3 1000000037000
-foo{bar="baz"} 4 1000000052000
+histogram{pod="a", le="1"} 1 1000000022000
+histogram{pod="a", le="5"} 3 1000000022000
+histogram{pod="a", le="10"} 4 1000000022000
+histogram{pod="b", le="1"} 42 1000000023000
+histogram{pod="b", le="5"} 50 1000000023000
+histogram{pod="b", le="10"} 100 1000000023000
 `
 
 	// Push the inputMetrics to Aggregators
@@ -187,8 +191,10 @@ foo{bar="baz"} 4 1000000052000
 	}
 
 	inputMetrics = `
-foo{bar="baz"} 7 1000000067000
-foo{bar="baz"} 8 1000000071000
+histogram{pod="a", le="1"} 2 1000000037000
+histogram{pod="b", le="1"} 42 1000000038000
+histogram{pod="b", le="5"} 52 1000000038000
+histogram{pod="b", le="10"} 104 1000000038000
 `
 
 	// Push the inputMetrics to Aggregators
@@ -200,9 +206,25 @@ foo{bar="baz"} 8 1000000071000
 	}
 
 	inputMetrics = `
-foo{bar="baz"} 10 1000000085000
+histogram{pod="a", le="5"} 5 1000000037000
+histogram{pod="a", le="10"} 6 1000000037000
 `
+	// Push the inputMetrics to Aggregators
+	tssInput = mustParsePromMetrics(inputMetrics)
+	_ = a.Push(tssInput, nil)
 
+	for _, ag := range a.as {
+		ag.flush(pushFunc, time.Duration(123*float64(time.Second)), false)
+	}
+
+	inputMetrics = `
+histogram{pod="a", le="1"} 2 1000000052000
+histogram{pod="a", le="5"} 5 1000000052000
+histogram{pod="a", le="10"} 6 1000000052000
+histogram{pod="b", le="1"} 42 1000000053000
+histogram{pod="b", le="5"} 52 1000000053000
+histogram{pod="b", le="10"} 106 1000000053000
+`
 	// Push the inputMetrics to Aggregators
 	tssInput = mustParsePromMetrics(inputMetrics)
 	_ = a.Push(tssInput, nil)
