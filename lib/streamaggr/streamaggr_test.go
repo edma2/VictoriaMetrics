@@ -153,7 +153,7 @@ func TestAggregatorsFailure(t *testing.T) {
 `)
 }
 
-func TestPushDelta(t *testing.T) {
+func TestWindowedAggregator(t *testing.T) {
 	config := `
 - interval: 15s
   outputs: [total_windowed_prometheus]
