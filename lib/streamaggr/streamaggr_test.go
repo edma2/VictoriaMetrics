@@ -153,6 +153,53 @@ func TestAggregatorsFailure(t *testing.T) {
 `)
 }
 
+func TestPushDelta(t *testing.T) {
+	config := `
+- interval: 15s
+  outputs: [total_windowed_prometheus]
+`
+	opts := &Options{
+		FlushOnShutdown:        true,
+		NoAlignFlushToInterval: true,
+	}
+	pushFunc := func(tss []prompbmarshal.TimeSeries) {
+		fmt.Println(tss)
+	}
+	a, err := newAggregatorsFromData([]byte(config), pushFunc, opts)
+	if err != nil {
+		t.Fatalf("cannot initialize aggregators: %s", err)
+	}
+
+	inputMetrics := `
+foo{bar="baz"} 1 1000000022000
+foo{bar="baz"} 3 1000000037000
+foo{bar="baz"} 4 1000000052000
+`
+
+	// Push the inputMetrics to Aggregators
+	tssInput := mustParsePromMetrics(inputMetrics)
+	_ = a.Push(tssInput, nil)
+
+	for _, ag := range a.as {
+		fmt.Println("flushing")
+		ag.flush(pushFunc, time.Duration(123*float64(time.Second)), false)
+	}
+
+	inputMetrics = `
+foo{bar="baz"} 7 1000000067000
+`
+
+	// Push the inputMetrics to Aggregators
+	tssInput = mustParsePromMetrics(inputMetrics)
+	_ = a.Push(tssInput, nil)
+
+	for _, ag := range a.as {
+		fmt.Println("flushing")
+		ag.flush(pushFunc, time.Duration(123*float64(time.Second)), false)
+	}
+
+}
+
 func TestAggregatorsEqual(t *testing.T) {
 	f := func(a, b string, expectedResult bool) {
 		t.Helper()
