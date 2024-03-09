@@ -1,6 +1,7 @@
 package streamaggr
 
 import (
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"math"
 	"slices"
 	"sync"
@@ -106,8 +107,13 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 
 	for i := range samples {
 		s := &samples[i]
-		if s.timestamp < tooLateDeadlineMsec || s.timestamp > currentTimeMsec {
+		if s.timestamp < tooLateDeadlineMsec {
+			logger.Infof("[windowed_total]: sample too late: %v\n", *s)
 			continue
+		}
+		if s.timestamp > currentTimeMsec {
+			logger.Infof("[windowed_total]: sample too far far in future: %v\n", *s)
+			//	continue
 		}
 
 		inputKey, outputKey := getInputOutputKey(s.key)
