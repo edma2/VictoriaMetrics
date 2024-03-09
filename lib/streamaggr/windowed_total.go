@@ -73,7 +73,7 @@ func newWindowedTotalAggrState(interval time.Duration, stalenessInterval time.Du
 		resetTotalOnFlush:         resetTotalOnFlush,
 		keepFirstSample:           keepFirstSample,
 		intervalSecs:              intervalSecs,
-		maxDelayedSampleSecs:      15, // TODO: parameterize
+		maxDelayedSampleSecs:      intervalSecs, // TODO: parameterize
 		stalenessSecs:             stalenessSecs,
 		ignoreFirstSampleDeadline: ignoreFirstSampleDeadline,
 		ignoreOutOfOrderSamples:   ignoreOutOfOrderSamples,
@@ -99,7 +99,6 @@ func (as *windowedTotalAggrState) pushSample(sv *windowedTotalStateValue, delta 
 
 func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 	currentTime := as.getUnixTimestamp()
-	currentTimeMsec := int64(currentTime) * 1000
 	tooLateDeadline := currentTime - as.maxDelayedSampleSecs
 	tooLateDeadlineMsec := int64(tooLateDeadline) * 1000
 	deleteDeadline := currentTime + as.stalenessSecs
@@ -108,11 +107,11 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 	for i := range samples {
 		s := &samples[i]
 		if s.timestamp < tooLateDeadlineMsec {
-			logger.Infof("[windowed_total]: sample too late: %v\n", *s)
+			logger.Infof("[windowed_total]: sample too late\n")
 			continue
 		}
-		if s.timestamp > currentTimeMsec {
-			logger.Infof("[windowed_total]: sample too far far in future: %v\n", *s)
+		if s.timestamp/1000 > int64(currentTime) {
+			logger.Infof("[windowed_total]: sample too far far in future: %d\n", s.timestamp)
 			//	continue
 		}
 
