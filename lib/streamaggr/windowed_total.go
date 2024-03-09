@@ -107,7 +107,7 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 		s := &samples[i]
 		timestampSecs := uint64(s.timestamp / 1000)
 		if timestampSecs < tooLateDeadline {
-			logger.Infof("[windowed_total]: sample too late\n")
+			//	logger.Infof("[windowed_total]: sample too late\n")
 			continue
 		}
 		if timestampSecs > currentTime+5 {
