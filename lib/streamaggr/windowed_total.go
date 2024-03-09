@@ -111,7 +111,7 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 			continue
 		}
 		if timestampSecs > currentTime {
-			logger.Infof("[windowed_total]: sample too far far in future: %d\n", s.timestamp)
+			logger.Infof("[windowed_total]: sample too far far in future: %d (vs. %d)\n", timestampSecs, currentTime)
 			//	continue
 		}
 
