@@ -158,80 +158,90 @@ func TestWindowedAggregator(t *testing.T) {
 - interval: 15s
   without: [pod]
   outputs: [total_windowed_prometheus]
+  staleness_interval: 24h
 `
+
+	var now uint64
 	opts := &Options{
-		FlushOnShutdown:        true,
-		NoAlignFlushToInterval: true,
+		FlushOnShutdown: true,
+		UnixTimestampFunc: func() uint64 {
+			return now
+		},
 	}
+	var tssOutput []prompbmarshal.TimeSeries
+	var tssOutputLock sync.Mutex
 	pushFunc := func(tss []prompbmarshal.TimeSeries) {
-		for _, ts := range tss {
-			fmt.Printf("flushed: %v\n", ts)
-		}
+		tssOutputLock.Lock()
+		tssOutput = appendClonedTimeseries(tssOutput, tss)
+		tssOutputLock.Unlock()
 	}
 	a, err := newAggregatorsFromData([]byte(config), pushFunc, opts)
 	if err != nil {
 		t.Fatalf("cannot initialize aggregators: %s", err)
 	}
 
-	inputMetrics := `
-histogram{pod="a", le="1"} 1 1000000022000
-histogram{pod="a", le="5"} 3 1000000022000
-histogram{pod="a", le="10"} 4 1000000022000
-histogram{pod="b", le="1"} 42 1000000023000
-histogram{pod="b", le="5"} 50 1000000023000
-histogram{pod="b", le="10"} 100 1000000023000
-`
-
-	// Push the inputMetrics to Aggregators
-	tssInput := mustParsePromMetrics(inputMetrics)
-	_ = a.Push(tssInput, nil)
-
-	for _, ag := range a.as {
-		ag.flush(pushFunc, time.Duration(123*float64(time.Second)), false)
+	push := func(inputMetrics string) {
+		tssInput := mustParsePromMetrics(inputMetrics)
+		_ = a.Push(tssInput, nil)
 	}
 
-	inputMetrics = `
-histogram{pod="a", le="1"} 2 1000000037000
-histogram{pod="b", le="1"} 42 1000000038000
-histogram{pod="b", le="5"} 52 1000000038000
-histogram{pod="b", le="10"} 104 1000000038000
-`
-
-	// Push the inputMetrics to Aggregators
-	tssInput = mustParsePromMetrics(inputMetrics)
-	_ = a.Push(tssInput, nil)
-
-	for _, ag := range a.as {
-		ag.flush(pushFunc, time.Duration(123*float64(time.Second)), false)
+	flush := func(outputMetricsExpected string) {
+		for _, ag := range a.as {
+			ag.flush(pushFunc, time.Duration(123*float64(time.Second)), false)
+		}
+		// Verify the tssOutput contains the expected metrics
+		outputMetrics := timeSeriessToString(tssOutput, true)
+		if outputMetrics != outputMetricsExpected {
+			t.Fatalf("unexpected output metrics;\ngot\n%s\nwant\n%s", outputMetrics, outputMetricsExpected)
+		}
+		tssOutput = nil
 	}
 
-	inputMetrics = `
-histogram{pod="a", le="5"} 5 1000000037000
-histogram{pod="a", le="10"} 6 1000000037000
-`
-	// Push the inputMetrics to Aggregators
-	tssInput = mustParsePromMetrics(inputMetrics)
-	_ = a.Push(tssInput, nil)
+	// windows: 1000000005, 1000000020, 1000000035, 1000000050, 1000000065, ...
 
-	for _, ag := range a.as {
-		ag.flush(pushFunc, time.Duration(123*float64(time.Second)), false)
-	}
+	// initialize
+	now = 1000000025
+	push(`
+histogram{pod="a", le="1"} 0 1000000022000
+histogram{pod="a", le="5"} 0 1000000022000
+histogram{pod="a", le="10"} 0 1000000022000
+`)
+	flush(``)
 
-	inputMetrics = `
-histogram{pod="a", le="1"} 2 1000000052000
-histogram{pod="a", le="5"} 5 1000000052000
-histogram{pod="a", le="10"} 6 1000000052000
-histogram{pod="b", le="1"} 42 1000000053000
-histogram{pod="b", le="5"} 52 1000000053000
-histogram{pod="b", le="10"} 106 1000000053000
-`
-	// Push the inputMetrics to Aggregators
-	tssInput = mustParsePromMetrics(inputMetrics)
-	_ = a.Push(tssInput, nil)
+	// normal case
+	now = 1000000040
+	push(`
+histogram{pod="a", le="1"} 1 1000000037000
+histogram{pod="a", le="5"} 1 1000000037000
+histogram{pod="a", le="10"} 1 1000000037000
+`)
+	flush(``)
 
-	for _, ag := range a.as {
-		ag.flush(pushFunc, time.Duration(123*float64(time.Second)), false)
-	}
+	// missed a bucket
+	now = 1000000055
+	push(`
+histogram{pod="a", le="1"} 1 1000000052000
+histogram{pod="a", le="10"} 4 1000000052000
+`)
+	flush(``)
+
+	// found it
+	now = 1000000057
+	push(`
+histogram{pod="a", le="5"} 4 1000000052000
+`)
+	now = 1000000068
+	flush(
+		`histogram:15s_without_pod_total{le="1"} 1 1000000050000
+histogram:15s_without_pod_total{le="10"} 1 1000000050000
+histogram:15s_without_pod_total{le="5"} 1 1000000050000
+`)
+	now = 1000000081
+	flush(
+		`histogram:15s_without_pod_total{le="1"} 1 1000000065000
+histogram:15s_without_pod_total{le="10"} 4 1000000065000
+histogram:15s_without_pod_total{le="5"} 4 1000000065000
+`)
 }
 
 func TestAggregatorsEqual(t *testing.T) {
@@ -318,7 +328,7 @@ func TestAggregatorsSuccess(t *testing.T) {
 		}
 
 		// Verify the tssOutput contains the expected metrics
-		outputMetrics := timeSeriessToString(tssOutput)
+		outputMetrics := timeSeriessToString(tssOutput, false)
 		if outputMetrics != outputMetricsExpected {
 			t.Fatalf("unexpected output metrics;\ngot\n%s\nwant\n%s", outputMetrics, outputMetricsExpected)
 		}
@@ -956,7 +966,7 @@ func TestAggregatorsWithDedupInterval(t *testing.T) {
 		// Verify the tssOutput contains the expected metrics
 		tsStrings := make([]string, len(tssOutput))
 		for i, ts := range tssOutput {
-			tsStrings[i] = timeSeriesToString(ts)
+			tsStrings[i] = timeSeriesToString(ts, false)
 		}
 		sort.Strings(tsStrings)
 		outputMetrics := strings.Join(tsStrings, "")
@@ -994,19 +1004,22 @@ foo:1m_sum_samples{baz="qwe"} 10
 `, "11111111")
 }
 
-func timeSeriessToString(tss []prompbmarshal.TimeSeries) string {
+func timeSeriessToString(tss []prompbmarshal.TimeSeries, withTimestamp bool) string {
 	a := make([]string, len(tss))
 	for i, ts := range tss {
-		a[i] = timeSeriesToString(ts)
+		a[i] = timeSeriesToString(ts, withTimestamp)
 	}
 	sort.Strings(a)
 	return strings.Join(a, "")
 }
 
-func timeSeriesToString(ts prompbmarshal.TimeSeries) string {
+func timeSeriesToString(ts prompbmarshal.TimeSeries, withTimestamp bool) string {
 	labelsString := promrelabel.LabelsToString(ts.Labels)
 	if len(ts.Samples) != 1 {
 		panic(fmt.Errorf("unexpected number of samples for %s: %d; want 1", labelsString, len(ts.Samples)))
+	}
+	if withTimestamp {
+		return fmt.Sprintf("%s %v %d\n", labelsString, ts.Samples[0].Value, ts.Samples[0].Timestamp)
 	}
 	return fmt.Sprintf("%s %v\n", labelsString, ts.Samples[0].Value)
 }
