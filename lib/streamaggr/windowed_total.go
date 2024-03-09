@@ -48,7 +48,7 @@ type windowedTotalAggrState struct {
 type windowedTotalStateValue struct {
 	mu             sync.Mutex
 	lastValues     map[string]windowedLastValueState
-	windows        map[int64]float64
+	windows        map[uint64]float64
 	total          float64
 	deleteDeadline uint64
 	deleted        bool
@@ -82,15 +82,15 @@ func newWindowedTotalAggrState(interval time.Duration, stalenessInterval time.Du
 }
 
 // roundUp rounds up n to the nearest r.
-func roundUp(n, r int64) int64 {
+func roundUp(n, r uint64) uint64 {
 	if n%r == 0 {
 		return n
 	}
 	return r - (n % r) + n
 }
 
-func (as *windowedTotalAggrState) pushSample(sv *windowedTotalStateValue, delta float64, timestamp int64) {
-	key := roundUp(timestamp, int64(as.intervalSecs)*1000)
+func (as *windowedTotalAggrState) pushSample(sv *windowedTotalStateValue, delta float64, timestamp uint64) {
+	key := roundUp(timestamp, as.intervalSecs)
 	if _, ok := sv.windows[key]; !ok {
 		sv.windows[key] = 0
 	}
@@ -100,17 +100,17 @@ func (as *windowedTotalAggrState) pushSample(sv *windowedTotalStateValue, delta 
 func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 	currentTime := as.getUnixTimestamp()
 	tooLateDeadline := currentTime - as.maxDelayedSampleSecs
-	tooLateDeadlineMsec := int64(tooLateDeadline) * 1000
 	deleteDeadline := currentTime + as.stalenessSecs
 	keepFirstSample := as.keepFirstSample && currentTime > as.ignoreFirstSampleDeadline
 
 	for i := range samples {
 		s := &samples[i]
-		if s.timestamp < tooLateDeadlineMsec {
+		timestampSecs := uint64(s.timestamp / 1000)
+		if timestampSecs < tooLateDeadline {
 			logger.Infof("[windowed_total]: sample too late\n")
 			continue
 		}
-		if s.timestamp/1000 > int64(currentTime) {
+		if timestampSecs > currentTime {
 			logger.Infof("[windowed_total]: sample too far far in future: %d\n", s.timestamp)
 			//	continue
 		}
@@ -123,7 +123,7 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 			// The entry is missing in the map. Try creating it.
 			v = &windowedTotalStateValue{
 				lastValues: make(map[string]windowedLastValueState),
-				windows:    make(map[int64]float64),
+				windows:    make(map[uint64]float64),
 			}
 			vNew, loaded := as.m.LoadOrStore(outputKey, v)
 			if loaded {
@@ -140,10 +140,10 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 			if !as.ignoreOutOfOrderSamples || !outOfOrder {
 				if ok || keepFirstSample {
 					if s.value >= lv.value {
-						as.pushSample(sv, s.value-lv.value, s.timestamp)
+						as.pushSample(sv, s.value-lv.value, timestampSecs)
 					} else {
 						// counter reset
-						as.pushSample(sv, s.value, s.timestamp)
+						as.pushSample(sv, s.value, timestampSecs)
 					}
 				}
 				lv.value = s.value
@@ -193,7 +193,6 @@ func (as *windowedTotalAggrState) removeOldEntries(currentTime uint64) {
 func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 	currentTime := as.getUnixTimestamp()
 	tooLateDeadline := currentTime - as.maxDelayedSampleSecs
-	tooLateDeadlineMsec := tooLateDeadline * 1000
 
 	as.removeOldEntries(currentTime)
 
@@ -202,13 +201,13 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 		sv := v.(*windowedTotalStateValue)
 		sv.mu.Lock()
 
-		var flushTimestamps []int64 // TODO: optimize
+		var flushTimestamps []uint64 // TODO: optimize
 		for timestamp := range sv.windows {
-			if uint64(timestamp) < tooLateDeadlineMsec {
+			if timestamp < tooLateDeadline {
 				flushTimestamps = append(flushTimestamps, timestamp)
 			}
 		}
-		slices.SortFunc(flushTimestamps, func(a, b int64) int {
+		slices.SortFunc(flushTimestamps, func(a, b uint64) int {
 			if a < b {
 				return -1
 			} else if a > b {
@@ -237,7 +236,7 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 		if !deleted {
 			key := k.(string)
 			for i, timestamp := range flushTimestamps {
-				ctx.appendSeries(key, as.suffix, timestamp, flushTotals[i])
+				ctx.appendSeries(key, as.suffix, int64(timestamp*1000), flushTotals[i])
 			}
 		}
 		return true
