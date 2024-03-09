@@ -98,13 +98,15 @@ func (as *windowedTotalAggrState) pushSample(sv *windowedTotalStateValue, delta 
 
 func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 	currentTime := as.getUnixTimestamp()
+	currentTimeMsec := int64(currentTime) * 1000
 	tooLateDeadline := currentTime - as.maxDelayedSampleSecs
+	tooLateDeadlineMsec := int64(tooLateDeadline) * 1000
 	deleteDeadline := currentTime + as.stalenessSecs
 	keepFirstSample := as.keepFirstSample && currentTime > as.ignoreFirstSampleDeadline
+
 	for i := range samples {
 		s := &samples[i]
-		if uint64(s.timestamp) < tooLateDeadline || uint64(s.timestamp) > currentTime {
-			// sample is too old or too new
+		if s.timestamp < tooLateDeadlineMsec || s.timestamp > currentTimeMsec {
 			continue
 		}
 
@@ -116,6 +118,7 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 			// The entry is missing in the map. Try creating it.
 			v = &windowedTotalStateValue{
 				lastValues: make(map[string]windowedLastValueState),
+				windows:    make(map[int64]float64),
 			}
 			vNew, loaded := as.m.LoadOrStore(outputKey, v)
 			if loaded {
@@ -185,6 +188,7 @@ func (as *windowedTotalAggrState) removeOldEntries(currentTime uint64) {
 func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 	currentTime := as.getUnixTimestamp()
 	tooLateDeadline := currentTime - as.maxDelayedSampleSecs
+	tooLateDeadlineMsec := tooLateDeadline * 1000
 
 	as.removeOldEntries(currentTime)
 
@@ -195,14 +199,14 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 
 		var flushTimestamps []int64 // TODO: optimize
 		for timestamp := range sv.windows {
-			if uint64(timestamp) < tooLateDeadline {
+			if uint64(timestamp) < tooLateDeadlineMsec {
 				flushTimestamps = append(flushTimestamps, timestamp)
 			}
 		}
 		slices.SortFunc(flushTimestamps, func(a, b int64) int {
-			if flushTimestamps[a] < flushTimestamps[b] {
+			if a < b {
 				return -1
-			} else if flushTimestamps[a] > flushTimestamps[b] {
+			} else if a > b {
 				return 1
 			}
 			return 0
