@@ -1,15 +1,13 @@
 package streamaggr
 
 import (
-	//	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fasttime"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"math"
 	"slices"
 	"sync"
 	"time"
 )
-
-const maxFutureSampleSecs = 5
 
 // windowedTotalAggrState calculates output=total, e.g. the summary counter over input counters.
 type windowedTotalAggrState struct {
@@ -26,8 +24,9 @@ type windowedTotalAggrState struct {
 	// The time interval
 	intervalSecs uint64
 
-	// The maximum time a sample can be delayed in seconds.
-	maxDelayedSampleSecs uint64
+	// The maximum time a sample can be delayed in seconds. This has the side effect of delaying
+	// flushes by this duration.
+	maxDelaySecs uint64
 
 	// Time series state is dropped if no new samples are received during stalenessSecs.
 	//
@@ -61,9 +60,11 @@ type windowedLastValueState struct {
 	deleteDeadline uint64
 }
 
-func newWindowedTotalAggrState(interval time.Duration, stalenessInterval time.Duration, resetTotalOnFlush, keepFirstSample bool, ignoreOutOfOrderSamples bool) *windowedTotalAggrState {
+func newWindowedTotalAggrState(interval, stalenessInterval, maxDelay time.Duration, resetTotalOnFlush, keepFirstSample bool, ignoreOutOfOrderSamples bool) *windowedTotalAggrState {
 	stalenessSecs := roundDurationToSecs(stalenessInterval)
 	intervalSecs := roundDurationToSecs(interval)
+	maxDelaySecs := roundDurationToSecs(maxDelay)
+
 	ignoreFirstSampleDeadline := fasttime.UnixTimestamp() + stalenessSecs
 	suffix := "total"
 	if resetTotalOnFlush {
@@ -74,7 +75,7 @@ func newWindowedTotalAggrState(interval time.Duration, stalenessInterval time.Du
 		resetTotalOnFlush:         resetTotalOnFlush,
 		keepFirstSample:           keepFirstSample,
 		intervalSecs:              intervalSecs,
-		maxDelayedSampleSecs:      intervalSecs, // TODO: parameterize
+		maxDelaySecs:              maxDelaySecs,
 		stalenessSecs:             stalenessSecs,
 		ignoreFirstSampleDeadline: ignoreFirstSampleDeadline,
 		ignoreOutOfOrderSamples:   ignoreOutOfOrderSamples,
@@ -125,9 +126,9 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 		deleted := sv.deleted
 		if !deleted {
 			timestampSecs := uint64(s.timestamp / 1000)
-			tooLateDeadline := sv.maxTimestamp - as.maxDelayedSampleSecs
-			tooEarlyDeadline := sv.maxTimestamp + maxFutureSampleSecs
-			if timestampSecs < tooLateDeadline || timestampSecs > tooEarlyDeadline {
+			tooLateDeadline := sv.maxTimestamp - as.maxDelaySecs
+			if sv.maxTimestamp != 0 && timestampSecs < tooLateDeadline {
+				logger.Infof("Rejecting sample with timestamp in past: %d\n", s.timestamp)
 				sv.mu.Unlock()
 				continue
 			}
@@ -201,7 +202,7 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 		sv.mu.Lock()
 
 		// TODO: optimize
-		tooLateDeadline := sv.maxTimestamp - as.maxDelayedSampleSecs
+		tooLateDeadline := sv.maxTimestamp - as.maxDelaySecs
 		var flushTimestamps []uint64
 		for timestamp := range sv.windows {
 			if timestamp < tooLateDeadline {

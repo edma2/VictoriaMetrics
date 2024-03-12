@@ -15,7 +15,6 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/cgroup"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/encoding"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/envtemplate"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fasttime"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs/fscore"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
@@ -104,9 +103,6 @@ type Options struct {
 	//
 	// This option can be overriden individually per each aggregation via keep_metric_names option.
 	KeepMetricNames bool
-
-	// Use a custom function for getting timestamps. Just used for testing.
-	UnixTimestampFunc func() uint64
 }
 
 // Config is a configuration for a single stream aggregation.
@@ -135,6 +131,10 @@ type Config struct {
 	// Staleness interval is interval after which the series state will be reset if no samples have been sent during it.
 	// The parameter is only relevant for outputs: total, total_prometheus, increase, increase_prometheus and histogram_bucket.
 	StalenessInterval string `yaml:"staleness_interval,omitempty"`
+
+	// Max delay is the maximum allowed lateness for samples arriving late. Lateness is defined relative to
+	// the most recent sample that arrived. Late samples are dropped.
+	MaxDelay string `yaml:"max_delay,omitempty"`
 
 	// Outputs is a list of output aggregate functions to produce.
 	//
@@ -421,6 +421,15 @@ func newAggregator(cfg *Config, pushFunc PushFunc, ms *metrics.Set, opts *Option
 		}
 	}
 
+	// check cfg.MaxDelay
+	maxDelay := interval * 2
+	if cfg.MaxDelay != "" {
+		maxDelay, err = time.ParseDuration(cfg.MaxDelay)
+		if err != nil {
+			return nil, fmt.Errorf("cannot parse `max_delay: %q`: %w", cfg.MaxDelay, err)
+		}
+	}
+
 	// Check cfg.DropInputLabels
 	dropInputLabels := opts.DropInputLabels
 	if v := cfg.DropInputLabels; v != nil {
@@ -462,11 +471,6 @@ func newAggregator(cfg *Config, pushFunc PushFunc, ms *metrics.Set, opts *Option
 		}
 	}
 
-	getUnixTimestamp := opts.UnixTimestampFunc
-	if getUnixTimestamp == nil {
-		getUnixTimestamp = fasttime.UnixTimestamp
-	}
-
 	// initialize outputs list
 	if len(cfg.Outputs) == 0 {
 		return nil, fmt.Errorf("`outputs` list must contain at least a single entry from the list %s; "+
@@ -504,7 +508,7 @@ func newAggregator(cfg *Config, pushFunc PushFunc, ms *metrics.Set, opts *Option
 		case "total_prometheus":
 			aggrStates[i] = newTotalAggrState(stalenessInterval, false, false, true)
 		case "total_windowed_prometheus":
-			aggrStates[i] = newWindowedTotalAggrState(interval, stalenessInterval, false, false, true)
+			aggrStates[i] = newWindowedTotalAggrState(interval, stalenessInterval, maxDelay, false, false, true)
 		case "increase":
 			aggrStates[i] = newTotalAggrState(stalenessInterval, true, true, false)
 		case "increase_prometheus":

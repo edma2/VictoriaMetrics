@@ -159,14 +159,11 @@ func TestWindowedAggregator(t *testing.T) {
   without: [pod]
   outputs: [total_windowed_prometheus]
   staleness_interval: 24h
+  max_delay: 15s
 `
 
-	var now uint64
 	opts := &Options{
 		FlushOnShutdown: true,
-		UnixTimestampFunc: func() uint64 {
-			return now
-		},
 	}
 	var tssOutput []prompbmarshal.TimeSeries
 	var tssOutputLock sync.Mutex
@@ -200,7 +197,6 @@ func TestWindowedAggregator(t *testing.T) {
 	// windows: 1000000005, 1000000020, 1000000035, 1000000050, 1000000065, ...
 
 	// initialize
-	now = 1000000025
 	push(`
 histogram{pod="a", le="1"} 0 1000000022000
 histogram{pod="a", le="5"} 0 1000000022000
@@ -209,7 +205,6 @@ histogram{pod="a", le="10"} 0 1000000022000
 	flush(``)
 
 	// normal case
-	now = 1000000040
 	push(`
 histogram{pod="a", le="1"} 1 1000000037000
 histogram{pod="a", le="5"} 1 1000000037000
@@ -218,7 +213,6 @@ histogram{pod="a", le="10"} 1 1000000037000
 	flush(``)
 
 	// missed a bucket
-	now = 1000000055
 	push(`
 histogram{pod="a", le="1"} 1 1000000052000
 histogram{pod="a", le="10"} 4 1000000052000
@@ -226,17 +220,26 @@ histogram{pod="a", le="10"} 4 1000000052000
 	flush(``)
 
 	// found it
-	now = 1000000057
 	push(`
 histogram{pod="a", le="5"} 4 1000000052000
 `)
-	now = 1000000068
+	flush(``)
+	push(`
+histogram{pod="a", le="1"} 1 1000000067000
+histogram{pod="a", le="5"} 4 1000000067000
+histogram{pod="a", le="10"} 4 1000000067000
+`)
 	flush(
 		`histogram:15s_without_pod_total{le="1"} 1 1000000050000
 histogram:15s_without_pod_total{le="10"} 1 1000000050000
 histogram:15s_without_pod_total{le="5"} 1 1000000050000
 `)
-	now = 1000000081
+
+	push(`
+histogram{pod="a", le="1"} 1 1000000082000
+histogram{pod="a", le="5"} 4 1000000082000
+histogram{pod="a", le="10"} 4 1000000082000
+`)
 	flush(
 		`histogram:15s_without_pod_total{le="1"} 1 1000000065000
 histogram:15s_without_pod_total{le="10"} 4 1000000065000
@@ -284,7 +287,7 @@ func TestAggregatorsEqual(t *testing.T) {
 	f(`
 - outputs: [total]
   interval: 5m
-  flush_on_shutdown: true  
+  flush_on_shutdown: true
 `, `
 - outputs: [total]
   interval: 5m
