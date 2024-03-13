@@ -517,7 +517,7 @@ func newAggregator(cfg *Config, pushFunc PushFunc, ms *metrics.Set, opts *Option
 		case "total_prometheus":
 			aggrStates[i] = newTotalAggrState(stalenessInterval, false, false, true)
 		case "total_windowed_prometheus":
-			aggrStates[i] = newWindowedTotalAggrState(interval, stalenessInterval, maxDelay, false, false, true, getUnixTimestamp)
+			aggrStates[i] = newWindowedTotalAggrState(interval, stalenessInterval, maxDelay, getUnixTimestamp)
 		case "increase":
 			aggrStates[i] = newTotalAggrState(stalenessInterval, true, true, false)
 		case "increase_prometheus":

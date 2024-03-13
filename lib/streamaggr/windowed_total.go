@@ -14,12 +14,6 @@ type windowedTotalAggrState struct {
 
 	suffix string
 
-	// Whether to reset the output value on every flushState call.
-	resetTotalOnFlush bool
-
-	// Whether to take into account the first sample in new time series when calculating the output value.
-	keepFirstSample bool
-
 	// The time interval
 	intervalSecs uint64
 
@@ -31,15 +25,6 @@ type windowedTotalAggrState struct {
 	// Aslo, the first sample per each new series is ignored during stalenessSecs even if keepFirstSample is set.
 	// see ignoreFirstSampleDeadline for more details.
 	stalenessSecs uint64
-
-	// The first sample per each new series is ignored until this unix timestamp deadline in seconds even if keepFirstSample is set.
-	// This allows avoiding an initial spike of the output values at startup when new time series
-	// cannot be distinguished from already existing series. This is tracked with ignoreFirstSampleDeadline.
-	ignoreFirstSampleDeadline uint64
-
-	// Ignore samples which were older than the last seen sample. This is preferable to treating it as a
-	// counter reset.
-	ignoreOutOfOrderSamples bool
 
 	// Used for testing.
 	getUnixTimestamp func() uint64
@@ -59,25 +44,17 @@ type windowedLastValueState struct {
 	deleteDeadline uint64
 }
 
-func newWindowedTotalAggrState(interval, stalenessInterval, maxDelay time.Duration, resetTotalOnFlush, keepFirstSample bool, ignoreOutOfOrderSamples bool, getUnixTimestamp func() uint64) *windowedTotalAggrState {
+func newWindowedTotalAggrState(interval, stalenessInterval, maxDelay time.Duration, getUnixTimestamp func() uint64) *windowedTotalAggrState {
 	stalenessSecs := roundDurationToSecs(stalenessInterval)
 	intervalSecs := roundDurationToSecs(interval)
 	maxDelaySecs := roundDurationToSecs(maxDelay)
-	ignoreFirstSampleDeadline := getUnixTimestamp() + stalenessSecs
 	suffix := "total"
-	if resetTotalOnFlush {
-		suffix = "increase"
-	}
 	return &windowedTotalAggrState{
-		suffix:                    suffix,
-		resetTotalOnFlush:         resetTotalOnFlush,
-		keepFirstSample:           keepFirstSample,
-		intervalSecs:              intervalSecs,
-		maxDelaySecs:              maxDelaySecs,
-		stalenessSecs:             stalenessSecs,
-		ignoreFirstSampleDeadline: ignoreFirstSampleDeadline,
-		ignoreOutOfOrderSamples:   ignoreOutOfOrderSamples,
-		getUnixTimestamp:          getUnixTimestamp,
+		suffix:           suffix,
+		intervalSecs:     intervalSecs,
+		maxDelaySecs:     maxDelaySecs,
+		stalenessSecs:    stalenessSecs,
+		getUnixTimestamp: getUnixTimestamp,
 	}
 }
 
@@ -230,9 +207,7 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 		sv.pendingSamples = sv.pendingSamples[i:]
 
 		if resetState {
-			if as.resetTotalOnFlush {
-				sv.total = 0
-			} else if math.Abs(sv.total) >= (1 << 53) {
+			if math.Abs(sv.total) >= (1 << 53) {
 				// It is time to reset the entry, since it starts losing float64 precision
 				sv.total = 0
 			}
