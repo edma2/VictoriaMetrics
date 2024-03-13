@@ -40,7 +40,7 @@ type windowedTotalStateValue struct {
 }
 
 type windowedLastValueState struct {
-	value          float64
+	baseValue      float64
 	deleteDeadline uint64
 }
 
@@ -109,7 +109,7 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 			} else {
 				// if it's our first time seeing it, don't add a pending sample but initialize the value
 				// so the next sample takes the delta.
-				lv.value = s.value
+				lv.baseValue = s.value
 			}
 			lv.deleteDeadline = deleteDeadline
 			sv.lastValues[inputKey] = lv
@@ -191,14 +191,14 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 			lv, ok := sv.lastValues[inputKey]
 			if ok {
 				delta := s.value
-				if s.value >= lv.value {
-					delta = s.value - lv.value
+				if s.value >= lv.baseValue {
+					delta = s.value - lv.baseValue
 				}
 				if _, ok := windows[windowKey]; !ok {
 					windowsToFlush = append(windowsToFlush, windowKey)
 				}
 				windows[windowKey] += delta
-				lv.value = s.value
+				lv.baseValue = s.value
 				sv.lastValues[inputKey] = lv
 			}
 			i++
