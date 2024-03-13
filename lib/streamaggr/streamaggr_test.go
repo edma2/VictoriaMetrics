@@ -242,6 +242,126 @@ histogram:15s_without_pod_total{le="5"} 1 1000000050000
 histogram:15s_without_pod_total{le="10"} 4 1000000065000
 histogram:15s_without_pod_total{le="5"} 4 1000000065000
 `)
+	// OOO
+	now = 1000000083
+	push(`
+histogram{pod="a", le="1"} 4 1000000082000
+histogram{pod="a", le="5"} 10 1000000082000
+histogram{pod="a", le="10"} 10 1000000082000
+`)
+	flush(``)
+
+	now = 1000000084
+	push(`
+histogram{pod="a", le="1"} 1 1000000081000
+histogram{pod="a", le="5"} 6 1000000081000
+histogram{pod="a", le="10"} 7 1000000081000
+`)
+	now = 1000000096
+	flush(``)
+}
+
+func TestWindowedAggregatorOOO(t *testing.T) {
+	config := `
+- interval: 15s
+  max_delay: 30s
+  without: [pod]
+  outputs: [total_windowed_prometheus]
+  staleness_interval: 24h
+`
+
+	var now uint64
+	opts := &Options{
+		FlushOnShutdown: true,
+		UnixTimestampFunc: func() uint64 {
+			return now
+		},
+	}
+	var tssOutput []prompbmarshal.TimeSeries
+	var tssOutputLock sync.Mutex
+	pushFunc := func(tss []prompbmarshal.TimeSeries) {
+		tssOutputLock.Lock()
+		tssOutput = appendClonedTimeseries(tssOutput, tss)
+		tssOutputLock.Unlock()
+	}
+	a, err := newAggregatorsFromData([]byte(config), pushFunc, opts)
+	if err != nil {
+		t.Fatalf("cannot initialize aggregators: %s", err)
+	}
+
+	push := func(inputMetrics string) {
+		tssInput := mustParsePromMetrics(inputMetrics)
+		_ = a.Push(tssInput, nil)
+	}
+
+	flush := func(outputMetricsExpected string) {
+		for _, ag := range a.as {
+			ag.flush(pushFunc, time.Duration(123*float64(time.Second)), false)
+		}
+		// Verify the tssOutput contains the expected metrics
+		outputMetrics := timeSeriessToString(tssOutput, true)
+		if outputMetrics != outputMetricsExpected {
+			t.Fatalf("unexpected output metrics;\ngot\n%s\nwant\n%s", outputMetrics, outputMetricsExpected)
+		}
+		tssOutput = nil
+	}
+
+	// windows: 1000000005, 1000000020, 1000000035, 1000000050, 1000000065, ...
+
+	now = 1000000010
+	push(`
+foo{pod="a"} 0.3 1000000009
+foo{pod="b"} 0 1000000009
+`)
+	flush(``)
+
+	now = 1000000025
+	push(`
+foo{pod="a"} 0.5 1000000024
+`)
+	flush(``)
+
+	now = 1000000040
+	push(`
+foo{pod="a"} 0.7 1000000039
+foo{pod="b"} 0.4 1000000039
+`)
+	flush(``)
+
+	now = 1000000041
+	push(`
+foo{pod="b"} 0.2 1000000024
+`)
+	now = 1000000055
+	push(`
+foo{pod="a"} 0.7 1000000054
+foo{pod="b"} 0.4 1000000054
+`)
+	flush(``)
+	now = 1000000055
+	push(`
+foo{pod="a"} 0.7 1000000054
+foo{pod="b"} 0.4 1000000054
+`)
+	flush(``)
+	now = 1000000070
+	push(`
+foo{pod="a"} 0.7 1000000069
+foo{pod="b"} 0.5 1000000069
+`)
+	flush(`foo:15s_without_pod_total 0.4 1000000035000
+`)
+
+	now = 1000000085
+	flush(`foo:15s_without_pod_total 0.8 1000000050000
+`)
+
+	now = 1000000100
+	flush(`foo:15s_without_pod_total 0.8 1000000065000
+`)
+	now = 1000000115
+	flush(`foo:15s_without_pod_total 0.9 1000000080000
+`)
 }
 
 func TestAggregatorsEqual(t *testing.T) {
@@ -284,7 +404,7 @@ func TestAggregatorsEqual(t *testing.T) {
 	f(`
 - outputs: [total]
   interval: 5m
-  flush_on_shutdown: true  
+  flush_on_shutdown: true
 `, `
 - outputs: [total]
   interval: 5m
