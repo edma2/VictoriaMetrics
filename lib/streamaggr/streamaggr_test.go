@@ -310,7 +310,6 @@ func TestWindowedAggregatorOOO(t *testing.T) {
 
 	now = 1000000010
 	push(`
-foo{pod="a"} 0.3 1000000009
 foo{pod="b"} 0 1000000009
 `)
 	flush(``)
@@ -318,6 +317,12 @@ foo{pod="b"} 0 1000000009
 	now = 1000000025
 	push(`
 foo{pod="a"} 0.5 1000000024
+`)
+	flush(``)
+
+	now = 1000000026
+	push(`
+foo{pod="a"} 0.3 1000000009
 `)
 	flush(``)
 
@@ -332,12 +337,6 @@ foo{pod="b"} 0.4 1000000039
 	push(`
 foo{pod="b"} 0.2 1000000024
 `)
-	now = 1000000055
-	push(`
-foo{pod="a"} 0.7 1000000054
-foo{pod="b"} 0.4 1000000054
-`)
-	flush(``)
 	now = 1000000055
 	push(`
 foo{pod="a"} 0.7 1000000054
