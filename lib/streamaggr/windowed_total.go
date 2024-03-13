@@ -49,8 +49,9 @@ type pendingSample struct {
 }
 
 type windowedLastValueState struct {
-	baseValue      float64
-	deleteDeadline uint64
+	lastFlushedValue float64
+	deleteDeadline   uint64
+	hasFlushed       bool
 }
 
 func newWindowedTotalAggrState(interval, stalenessInterval, maxDelay time.Duration, getUnixTimestamp func() uint64, lateSamples *metrics.Counter) *windowedTotalAggrState {
@@ -112,15 +113,8 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 		sv.mu.Lock()
 		deleted := sv.deleted
 		if !deleted {
-			lv, ok := sv.lastValues[inputKey]
-			if ok {
-				// We saw this sample before so we can compute a delta.
-				sv.pendingSamples = append(sv.pendingSamples, pendingSample{inputKey, s.value, s.timestamp})
-			} else {
-				// if it's our first time seeing it, don't add a pending sample but initialize the value
-				// so the next sample takes the delta.
-				lv.baseValue = s.value
-			}
+			sv.pendingSamples = append(sv.pendingSamples, pendingSample{inputKey, s.value, s.timestamp})
+			lv, _ := sv.lastValues[inputKey]
 			lv.deleteDeadline = deleteDeadline
 			sv.lastValues[inputKey] = lv
 			sv.deleteDeadline = deleteDeadline
@@ -195,15 +189,18 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 			}
 			lv, ok := sv.lastValues[s.key]
 			if ok {
-				delta := s.value
-				if s.value >= lv.baseValue {
-					delta = s.value - lv.baseValue
+				if lv.hasFlushed {
+					delta := s.value
+					if s.value >= lv.lastFlushedValue {
+						delta = s.value - lv.lastFlushedValue
+					}
+					if _, ok := windows[windowKey]; !ok {
+						windowsToFlush = append(windowsToFlush, windowKey)
+					}
+					windows[windowKey] += delta
 				}
-				if _, ok := windows[windowKey]; !ok {
-					windowsToFlush = append(windowsToFlush, windowKey)
-				}
-				windows[windowKey] += delta
-				lv.baseValue = s.value
+				lv.lastFlushedValue = s.value
+				lv.hasFlushed = true
 				sv.lastValues[s.key] = lv
 			}
 			i++
