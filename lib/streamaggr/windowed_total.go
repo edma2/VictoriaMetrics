@@ -2,6 +2,7 @@ package streamaggr
 
 import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/VictoriaMetrics/metrics"
 	"math"
 	"slices"
 	"sync"
@@ -28,6 +29,8 @@ type windowedTotalAggrState struct {
 
 	// Used for testing.
 	getUnixTimestamp func() uint64
+
+	lateSamples *metrics.Counter
 }
 
 type windowedTotalStateValue struct {
@@ -50,7 +53,7 @@ type windowedLastValueState struct {
 	deleteDeadline uint64
 }
 
-func newWindowedTotalAggrState(interval, stalenessInterval, maxDelay time.Duration, getUnixTimestamp func() uint64) *windowedTotalAggrState {
+func newWindowedTotalAggrState(interval, stalenessInterval, maxDelay time.Duration, getUnixTimestamp func() uint64, lateSamples *metrics.Counter) *windowedTotalAggrState {
 	stalenessSecs := roundDurationToSecs(stalenessInterval)
 	intervalSecs := roundDurationToSecs(interval)
 	maxDelaySecs := roundDurationToSecs(maxDelay)
@@ -61,6 +64,7 @@ func newWindowedTotalAggrState(interval, stalenessInterval, maxDelay time.Durati
 		maxDelaySecs:     maxDelaySecs,
 		stalenessSecs:    stalenessSecs,
 		getUnixTimestamp: getUnixTimestamp,
+		lateSamples:      lateSamples,
 	}
 }
 
@@ -81,7 +85,7 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 		s := &samples[i]
 		timestampSecs := uint64(s.timestamp / 1000)
 		if timestampSecs < tooLateDeadline {
-			//	logger.Infof("[windowed_total]: sample too late\n")
+			as.lateSamples.Inc()
 			continue
 		}
 		if timestampSecs > currentTime+5 {
