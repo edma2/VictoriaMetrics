@@ -347,7 +347,7 @@ foo{pod="b"} 0.4 1000000054
 	now = 1000000070
 	push(`
 foo{pod="a"} 0.7 1000000069
-foo{pod="b"} 0.5 1000000069
+foo{pod="b"} 0.3 1000000069
 `)
 	flush(`foo:15s_without_pod_total 0.4 1000000035000
 `)
@@ -360,7 +360,7 @@ foo{pod="b"} 0.5 1000000069
 	flush(`foo:15s_without_pod_total 0.8 1000000065000
 `)
 	now = 1000000115
-	flush(`foo:15s_without_pod_total 0.9 1000000080000
+	flush(`foo:15s_without_pod_total 1.1 1000000080000
 `)
 }
 
