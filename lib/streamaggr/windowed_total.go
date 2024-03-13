@@ -32,11 +32,17 @@ type windowedTotalAggrState struct {
 
 type windowedTotalStateValue struct {
 	mu             sync.Mutex
-	pendingSamples []pushSample
+	pendingSamples []pendingSample
 	lastValues     map[string]windowedLastValueState
 	total          float64
 	deleteDeadline uint64
 	deleted        bool
+}
+
+type pendingSample struct {
+	key       string
+	value     float64
+	timestamp int64
 }
 
 type windowedLastValueState struct {
@@ -105,7 +111,7 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 			lv, ok := sv.lastValues[inputKey]
 			if ok {
 				// We saw this sample before so we can compute a delta.
-				sv.pendingSamples = append(sv.pendingSamples, *s)
+				sv.pendingSamples = append(sv.pendingSamples, pendingSample{inputKey, s.value, s.timestamp})
 			} else {
 				// if it's our first time seeing it, don't add a pending sample but initialize the value
 				// so the next sample takes the delta.
@@ -152,15 +158,13 @@ func (as *windowedTotalAggrState) removeOldEntries(currentTime uint64) {
 	})
 }
 
-func sortSamplesByTimestamp(samples []pushSample) {
-	slices.SortFunc(samples, func(a, b pushSample) int {
-		if a.timestamp < b.timestamp {
-			return -1
-		} else if a.timestamp > b.timestamp {
-			return 1
-		}
-		return 0
-	})
+func compareByTimestamp(a, b pendingSample) int {
+	if a.timestamp < b.timestamp {
+		return -1
+	} else if a.timestamp > b.timestamp {
+		return 1
+	}
+	return 0
 }
 
 func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
@@ -174,9 +178,7 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 		sv := v.(*windowedTotalStateValue)
 		sv.mu.Lock()
 
-		logger.Infof("pending samples: %v\n", sv.pendingSamples)
-
-		sortSamplesByTimestamp(sv.pendingSamples)
+		slices.SortFunc(sv.pendingSamples, compareByTimestamp)
 		windows := make(map[uint64]float64)
 		var windowsToFlush []uint64
 		i := 0
@@ -187,8 +189,7 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 			if windowKey > tooLateDeadline {
 				break
 			}
-			inputKey, _ := getInputOutputKey(s.key)
-			lv, ok := sv.lastValues[inputKey]
+			lv, ok := sv.lastValues[s.key]
 			if ok {
 				delta := s.value
 				if s.value >= lv.baseValue {
@@ -199,11 +200,10 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 				}
 				windows[windowKey] += delta
 				lv.baseValue = s.value
-				sv.lastValues[inputKey] = lv
+				sv.lastValues[s.key] = lv
 			}
 			i++
 		}
-		logger.Infof("windowsToFlush: %v (deadline: %v)\n", windowsToFlush, tooLateDeadline)
 		sv.pendingSamples = sv.pendingSamples[i:]
 
 		if resetState {
