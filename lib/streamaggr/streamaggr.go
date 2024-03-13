@@ -136,6 +136,10 @@ type Config struct {
 	// The parameter is only relevant for outputs: total, total_prometheus, increase, increase_prometheus and histogram_bucket.
 	StalenessInterval string `yaml:"staleness_interval,omitempty"`
 
+	// MaxDelay is the maximum ingestion delay allowed before we drop the sample. Allowing late samples
+	// permits samples to arrive out of order.
+	MaxDelay string `yaml:"max_delay,omitempty"`
+
 	// Outputs is a list of output aggregate functions to produce.
 	//
 	// The following names are allowed:
@@ -421,6 +425,15 @@ func newAggregator(cfg *Config, pushFunc PushFunc, ms *metrics.Set, opts *Option
 		}
 	}
 
+	// check cfg.MaxDelay
+	maxDelay := interval
+	if cfg.MaxDelay != "" {
+		maxDelay, err = time.ParseDuration(cfg.MaxDelay)
+		if err != nil {
+			return nil, fmt.Errorf("cannot parse `max_delay: %q`: %w", cfg.MaxDelay, err)
+		}
+	}
+
 	// Check cfg.DropInputLabels
 	dropInputLabels := opts.DropInputLabels
 	if v := cfg.DropInputLabels; v != nil {
@@ -504,7 +517,7 @@ func newAggregator(cfg *Config, pushFunc PushFunc, ms *metrics.Set, opts *Option
 		case "total_prometheus":
 			aggrStates[i] = newTotalAggrState(stalenessInterval, false, false, true)
 		case "total_windowed_prometheus":
-			aggrStates[i] = newWindowedTotalAggrState(interval, stalenessInterval, false, false, true, getUnixTimestamp)
+			aggrStates[i] = newWindowedTotalAggrState(interval, stalenessInterval, maxDelay, false, false, true, getUnixTimestamp)
 		case "increase":
 			aggrStates[i] = newTotalAggrState(stalenessInterval, true, true, false)
 		case "increase_prometheus":

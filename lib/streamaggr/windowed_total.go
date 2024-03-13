@@ -24,7 +24,7 @@ type windowedTotalAggrState struct {
 	intervalSecs uint64
 
 	// The maximum time a sample can be delayed in seconds.
-	maxDelayedSampleSecs uint64
+	maxDelaySecs uint64
 
 	// Time series state is dropped if no new samples are received during stalenessSecs.
 	//
@@ -59,9 +59,10 @@ type windowedLastValueState struct {
 	deleteDeadline uint64
 }
 
-func newWindowedTotalAggrState(interval time.Duration, stalenessInterval time.Duration, resetTotalOnFlush, keepFirstSample bool, ignoreOutOfOrderSamples bool, getUnixTimestamp func() uint64) *windowedTotalAggrState {
+func newWindowedTotalAggrState(interval, stalenessInterval, maxDelay time.Duration, resetTotalOnFlush, keepFirstSample bool, ignoreOutOfOrderSamples bool, getUnixTimestamp func() uint64) *windowedTotalAggrState {
 	stalenessSecs := roundDurationToSecs(stalenessInterval)
 	intervalSecs := roundDurationToSecs(interval)
+	maxDelaySecs := roundDurationToSecs(maxDelay)
 	ignoreFirstSampleDeadline := getUnixTimestamp() + stalenessSecs
 	suffix := "total"
 	if resetTotalOnFlush {
@@ -72,7 +73,7 @@ func newWindowedTotalAggrState(interval time.Duration, stalenessInterval time.Du
 		resetTotalOnFlush:         resetTotalOnFlush,
 		keepFirstSample:           keepFirstSample,
 		intervalSecs:              intervalSecs,
-		maxDelayedSampleSecs:      intervalSecs, // TODO: parameterize
+		maxDelaySecs:              maxDelaySecs,
 		stalenessSecs:             stalenessSecs,
 		ignoreFirstSampleDeadline: ignoreFirstSampleDeadline,
 		ignoreOutOfOrderSamples:   ignoreOutOfOrderSamples,
@@ -90,7 +91,7 @@ func roundUp(n, r uint64) uint64 {
 
 func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 	currentTime := as.getUnixTimestamp()
-	tooLateDeadline := currentTime - as.maxDelayedSampleSecs
+	tooLateDeadline := currentTime - as.maxDelaySecs
 	deleteDeadline := currentTime + as.stalenessSecs
 
 	for i := range samples {
@@ -187,7 +188,7 @@ func sortSamplesByTimestamp(samples []pushSample) {
 
 func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 	currentTime := as.getUnixTimestamp()
-	tooLateDeadline := currentTime - as.maxDelayedSampleSecs
+	tooLateDeadline := currentTime - as.maxDelaySecs
 
 	as.removeOldEntries(currentTime)
 
