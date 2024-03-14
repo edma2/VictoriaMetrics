@@ -164,7 +164,7 @@ func TestWindowedAggregator(t *testing.T) {
 	var now uint64
 	opts := &Options{
 		FlushOnShutdown: true,
-		UnixTimestampFunc: func() uint64 {
+		NowFunc: func() uint64 {
 			return now
 		},
 	}
@@ -273,7 +273,7 @@ func TestWindowedAggregatorOOO(t *testing.T) {
 	var now uint64
 	opts := &Options{
 		FlushOnShutdown: true,
-		UnixTimestampFunc: func() uint64 {
+		NowFunc: func() uint64 {
 			return now
 		},
 	}

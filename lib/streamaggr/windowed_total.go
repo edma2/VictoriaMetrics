@@ -28,7 +28,7 @@ type windowedTotalAggrState struct {
 	stalenessSecs uint64
 
 	// Used for testing.
-	getUnixTimestamp func() uint64
+	nowFunc func() uint64
 
 	lateSamples *metrics.Counter
 }
@@ -54,18 +54,18 @@ type windowedLastValueState struct {
 	hasFlushed       bool
 }
 
-func newWindowedTotalAggrState(interval, stalenessInterval, maxDelay time.Duration, getUnixTimestamp func() uint64, lateSamples *metrics.Counter) *windowedTotalAggrState {
+func newWindowedTotalAggrState(interval, stalenessInterval, maxDelay time.Duration, nowFunc func() uint64, lateSamples *metrics.Counter) *windowedTotalAggrState {
 	stalenessSecs := roundDurationToSecs(stalenessInterval)
 	intervalSecs := roundDurationToSecs(interval)
 	maxDelaySecs := roundDurationToSecs(maxDelay)
 	suffix := "total"
 	return &windowedTotalAggrState{
-		suffix:           suffix,
-		intervalSecs:     intervalSecs,
-		maxDelaySecs:     maxDelaySecs,
-		stalenessSecs:    stalenessSecs,
-		getUnixTimestamp: getUnixTimestamp,
-		lateSamples:      lateSamples,
+		suffix:        suffix,
+		intervalSecs:  intervalSecs,
+		maxDelaySecs:  maxDelaySecs,
+		stalenessSecs: stalenessSecs,
+		nowFunc:       nowFunc,
+		lateSamples:   lateSamples,
 	}
 }
 
@@ -78,7 +78,7 @@ func roundUp(n, r uint64) uint64 {
 }
 
 func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
-	currentTime := as.getUnixTimestamp()
+	currentTime := as.nowFunc()
 	tooLateDeadline := currentTime - as.maxDelaySecs
 	deleteDeadline := currentTime + as.stalenessSecs
 
@@ -166,7 +166,7 @@ func compareByTimestamp(a, b pendingSample) int {
 }
 
 func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
-	currentTime := as.getUnixTimestamp()
+	currentTime := as.nowFunc()
 	flushDeadline := currentTime - as.maxDelaySecs
 
 	as.removeOldEntries(currentTime)

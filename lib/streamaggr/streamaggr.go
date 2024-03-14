@@ -105,8 +105,8 @@ type Options struct {
 	// This option can be overriden individually per each aggregation via keep_metric_names option.
 	KeepMetricNames bool
 
-	// Use a custom function for getting timestamps. Just used for testing.
-	UnixTimestampFunc func() uint64
+	// Function for getting Unix timestamps in seconds. Used for unit testing.
+	NowFunc func() uint64
 }
 
 // Config is a configuration for a single stream aggregation.
@@ -475,9 +475,9 @@ func newAggregator(cfg *Config, pushFunc PushFunc, ms *metrics.Set, opts *Option
 		}
 	}
 
-	getUnixTimestamp := opts.UnixTimestampFunc
-	if getUnixTimestamp == nil {
-		getUnixTimestamp = fasttime.UnixTimestamp
+	nowFunc := opts.NowFunc
+	if nowFunc == nil {
+		nowFunc = fasttime.UnixTimestamp
 	}
 
 	// initialize outputs list
@@ -518,7 +518,7 @@ func newAggregator(cfg *Config, pushFunc PushFunc, ms *metrics.Set, opts *Option
 			aggrStates[i] = newTotalAggrState(stalenessInterval, false, false, true)
 		case "total_windowed_prometheus":
 			lateSamples := ms.GetOrCreateCounter(`vm_streamaggr_late_samples_total`)
-			aggrStates[i] = newWindowedTotalAggrState(interval, stalenessInterval, maxDelay, getUnixTimestamp, lateSamples)
+			aggrStates[i] = newWindowedTotalAggrState(interval, stalenessInterval, maxDelay, nowFunc, lateSamples)
 		case "increase":
 			aggrStates[i] = newTotalAggrState(stalenessInterval, true, true, false)
 		case "increase_prometheus":
