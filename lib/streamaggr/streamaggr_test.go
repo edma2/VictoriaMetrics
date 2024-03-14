@@ -14,6 +14,36 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/protoparser/prometheus"
 )
 
+func TestAggregatorInitialDelay(t *testing.T) {
+	var startTime uint64 = 1000000
+	nowFunc := func() uint64 {
+		return startTime
+	}
+
+	interval := 15 * time.Second
+	stalenessInterval := interval * 2
+	delay := interval
+	initialDelay := 3 * time.Minute
+	initialDelayInterval := 2 * time.Minute
+	as := newWindowedTotalAggrState(interval, stalenessInterval, delay, initialDelay, initialDelayInterval, nowFunc, nil)
+
+	initialDelaySecs := roundDurationToSecs(initialDelay)
+	delaySecs := roundDurationToSecs(delay)
+
+	if as.currentDelaySecs(startTime) != initialDelaySecs {
+		t.Fatalf("unexpected delay;\ngot\n%d\nwant\n%d", as.currentDelaySecs(startTime), initialDelaySecs)
+	}
+	if as.currentDelaySecs(startTime+120) != initialDelaySecs {
+		t.Fatalf("unexpected delay;\ngot\n%d\nwant\n%d", as.currentDelaySecs(startTime+120), initialDelaySecs)
+	}
+	if as.currentDelaySecs(startTime+121) != delaySecs {
+		t.Fatalf("unexpected delay;\ngot\n%d\nwant\n%d", as.currentDelaySecs(startTime+121), delaySecs)
+	}
+	if as.currentDelaySecs(startTime+200) != delaySecs {
+		t.Fatalf("unexpected delay;\ngot\n%d\nwant\n%d", as.currentDelaySecs(startTime+200), delaySecs)
+	}
+}
+
 func TestAggregatorsFailure(t *testing.T) {
 	f := func(config string) {
 		t.Helper()
@@ -264,7 +294,7 @@ histogram{pod="a", le="10"} 7 1000000081000
 func TestWindowedAggregatorOOO(t *testing.T) {
 	config := `
 - interval: 15s
-  max_delay: 30s
+  delay: 30s
   without: [pod]
   outputs: [total_windowed_prometheus]
   staleness_interval: 24h

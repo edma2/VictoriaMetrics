@@ -136,9 +136,11 @@ type Config struct {
 	// The parameter is only relevant for outputs: total, total_prometheus, increase, increase_prometheus and histogram_bucket.
 	StalenessInterval string `yaml:"staleness_interval,omitempty"`
 
-	// MaxDelay is the maximum ingestion delay allowed before we drop the sample. Allowing late samples
+	// Delay is the maximum ingestion delay allowed before we drop the sample. Allowing late samples
 	// permits samples to arrive out of order.
-	MaxDelay string `yaml:"max_delay,omitempty"`
+	Delay                string `yaml:"delay,omitempty"`
+	InitialDelay         string `yaml:"initial_delay,omitempty"`
+	InitialDelayInterval string `yaml:"initial_delay_interval,omitempty"`
 
 	// Outputs is a list of output aggregate functions to produce.
 	//
@@ -425,12 +427,26 @@ func newAggregator(cfg *Config, pushFunc PushFunc, ms *metrics.Set, opts *Option
 		}
 	}
 
-	// check cfg.MaxDelay
-	maxDelay := interval
-	if cfg.MaxDelay != "" {
-		maxDelay, err = time.ParseDuration(cfg.MaxDelay)
+	// check cfg.Delay
+	delay := interval
+	if cfg.Delay != "" {
+		delay, err = time.ParseDuration(cfg.Delay)
 		if err != nil {
-			return nil, fmt.Errorf("cannot parse `max_delay: %q`: %w", cfg.MaxDelay, err)
+			return nil, fmt.Errorf("cannot parse `delay: %q`: %w", cfg.Delay, err)
+		}
+	}
+	initialDelay := delay
+	if cfg.InitialDelay != "" {
+		initialDelay, err = time.ParseDuration(cfg.InitialDelay)
+		if err != nil {
+			return nil, fmt.Errorf("cannot parse `initial_delay: %q`: %w", cfg.InitialDelay, err)
+		}
+	}
+	initialDelayInterval := initialDelay
+	if cfg.InitialDelayInterval != "" {
+		initialDelayInterval, err = time.ParseDuration(cfg.InitialDelayInterval)
+		if err != nil {
+			return nil, fmt.Errorf("cannot parse `initial_delay_interval: %q`: %w", cfg.InitialDelayInterval, err)
 		}
 	}
 
@@ -518,7 +534,7 @@ func newAggregator(cfg *Config, pushFunc PushFunc, ms *metrics.Set, opts *Option
 			aggrStates[i] = newTotalAggrState(stalenessInterval, false, false, true)
 		case "total_windowed_prometheus":
 			lateSamples := ms.GetOrCreateCounter(`vm_streamaggr_late_samples_total`)
-			aggrStates[i] = newWindowedTotalAggrState(interval, stalenessInterval, maxDelay, nowFunc, lateSamples)
+			aggrStates[i] = newWindowedTotalAggrState(interval, stalenessInterval, delay, initialDelay, initialDelayInterval, nowFunc, lateSamples)
 		case "increase":
 			aggrStates[i] = newTotalAggrState(stalenessInterval, true, true, false)
 		case "increase_prometheus":

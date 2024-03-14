@@ -18,8 +18,17 @@ type windowedTotalAggrState struct {
 	// The time interval
 	intervalSecs uint64
 
-	// The maximum time a sample can be delayed in seconds.
-	maxDelaySecs uint64
+	// The delay after which aggregated samples are emitted. Samples arriving later
+	// are rejected for being too late.
+	delaySecs uint64
+
+	// The initial delay to accomodate clients flushing their queues when the aggregator restarts.
+	// By default, it equals delaySecs which disables this behavior.
+	initialDelaySecs uint64
+
+	// The initial delay period ends at this time and switches to delaySecs.
+	// It defaults to initialDelaySecs.
+	initialDelayDeadline uint64
 
 	// Time series state is dropped if no new samples are received during stalenessSecs.
 	//
@@ -54,18 +63,22 @@ type windowedLastValueState struct {
 	hasFlushed       bool
 }
 
-func newWindowedTotalAggrState(interval, stalenessInterval, maxDelay time.Duration, nowFunc func() uint64, lateSamples *metrics.Counter) *windowedTotalAggrState {
+func newWindowedTotalAggrState(interval, stalenessInterval, delay, initialDelay, initialDelayInterval time.Duration, nowFunc func() uint64, lateSamples *metrics.Counter) *windowedTotalAggrState {
 	stalenessSecs := roundDurationToSecs(stalenessInterval)
 	intervalSecs := roundDurationToSecs(interval)
-	maxDelaySecs := roundDurationToSecs(maxDelay)
+	delaySecs := roundDurationToSecs(delay)
+	initialDelaySecs := roundDurationToSecs(initialDelay)
+	initialDelayDeadline := nowFunc() + roundDurationToSecs(initialDelayInterval)
 	suffix := "total"
 	return &windowedTotalAggrState{
-		suffix:        suffix,
-		intervalSecs:  intervalSecs,
-		maxDelaySecs:  maxDelaySecs,
-		stalenessSecs: stalenessSecs,
-		nowFunc:       nowFunc,
-		lateSamples:   lateSamples,
+		suffix:               suffix,
+		intervalSecs:         intervalSecs,
+		delaySecs:            delaySecs,
+		initialDelaySecs:     initialDelaySecs,
+		initialDelayDeadline: initialDelayDeadline,
+		stalenessSecs:        stalenessSecs,
+		nowFunc:              nowFunc,
+		lateSamples:          lateSamples,
 	}
 }
 
@@ -77,9 +90,17 @@ func roundUp(n, r uint64) uint64 {
 	return r - (n % r) + n
 }
 
+func (as *windowedTotalAggrState) currentDelaySecs(currentTime uint64) uint64 {
+	if currentTime > as.initialDelayDeadline {
+		return as.delaySecs
+	} else {
+		return as.initialDelaySecs
+	}
+}
+
 func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 	currentTime := as.nowFunc()
-	tooLateDeadline := currentTime - as.maxDelaySecs
+	tooLateDeadline := currentTime - as.currentDelaySecs(currentTime)
 	deleteDeadline := currentTime + as.stalenessSecs
 
 	for i := range samples {
@@ -167,7 +188,7 @@ func compareByTimestamp(a, b pendingSample) int {
 
 func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 	currentTime := as.nowFunc()
-	flushDeadline := currentTime - as.maxDelaySecs
+	flushDeadline := currentTime - as.currentDelaySecs(currentTime)
 
 	as.removeOldEntries(currentTime)
 
