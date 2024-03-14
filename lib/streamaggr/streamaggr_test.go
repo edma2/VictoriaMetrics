@@ -161,8 +161,12 @@ func TestWindowedAggregator(t *testing.T) {
   staleness_interval: 24h
 `
 
+	var now uint64
 	opts := &Options{
 		FlushOnShutdown: true,
+		UnixTimestampFunc: func() uint64 {
+			return now
+		},
 	}
 	var tssOutput []prompbmarshal.TimeSeries
 	var tssOutputLock sync.Mutex
@@ -196,6 +200,7 @@ func TestWindowedAggregator(t *testing.T) {
 	// windows: 1000000005, 1000000020, 1000000035, 1000000050, 1000000065, ...
 
 	// initialize
+	now = 1000000025
 	push(`
 histogram{pod="a", le="1"} 0 1000000022000
 histogram{pod="a", le="5"} 0 1000000022000
@@ -204,6 +209,7 @@ histogram{pod="a", le="10"} 0 1000000022000
 	flush(``)
 
 	// normal case
+	now = 1000000040
 	push(`
 histogram{pod="a", le="1"} 1 1000000037000
 histogram{pod="a", le="5"} 1 1000000037000
@@ -212,6 +218,7 @@ histogram{pod="a", le="10"} 1 1000000037000
 	flush(``)
 
 	// missed a bucket
+	now = 1000000055
 	push(`
 histogram{pod="a", le="1"} 1 1000000052000
 histogram{pod="a", le="10"} 4 1000000052000
@@ -219,27 +226,39 @@ histogram{pod="a", le="10"} 4 1000000052000
 	flush(``)
 
 	// found it
+	now = 1000000057
 	push(`
 histogram{pod="a", le="5"} 4 1000000052000
 `)
-	flush(``)
-
-	push(`
-histogram{pod="a", le="1"} 4 1000000067000
-histogram{pod="a", le="5"} 10 1000000067000
-histogram{pod="a", le="10"} 10 1000000067000
+	now = 1000000068
+	flush(
+		`histogram:15s_without_pod_total{le="1"} 1 1000000050000
+histogram:15s_without_pod_total{le="10"} 1 1000000050000
+histogram:15s_without_pod_total{le="5"} 1 1000000050000
 `)
-	flush(``)
-
+	now = 1000000081
+	flush(
+		`histogram:15s_without_pod_total{le="1"} 1 1000000065000
+histogram:15s_without_pod_total{le="10"} 4 1000000065000
+histogram:15s_without_pod_total{le="5"} 4 1000000065000
+`)
+	// OOO
+	now = 1000000083
 	push(`
 histogram{pod="a", le="1"} 4 1000000082000
 histogram{pod="a", le="5"} 10 1000000082000
 histogram{pod="a", le="10"} 10 1000000082000
 `)
-	flush(`histogram:15s_without_pod_total{le="1"} 1 1000000050000
-histogram:15s_without_pod_total{le="10"} 1 1000000050000
-histogram:15s_without_pod_total{le="5"} 1 1000000050000
+	flush(``)
+
+	now = 1000000084
+	push(`
+histogram{pod="a", le="1"} 1 1000000081000
+histogram{pod="a", le="5"} 6 1000000081000
+histogram{pod="a", le="10"} 7 1000000081000
 `)
+	now = 1000000096
+	flush(``)
 }
 
 func TestWindowedAggregatorOOO(t *testing.T) {
@@ -251,8 +270,12 @@ func TestWindowedAggregatorOOO(t *testing.T) {
   staleness_interval: 24h
 `
 
+	var now uint64
 	opts := &Options{
 		FlushOnShutdown: true,
+		UnixTimestampFunc: func() uint64 {
+			return now
+		},
 	}
 	var tssOutput []prompbmarshal.TimeSeries
 	var tssOutputLock sync.Mutex
@@ -285,35 +308,42 @@ func TestWindowedAggregatorOOO(t *testing.T) {
 
 	// windows: 1000000005, 1000000020, 1000000035, 1000000050, 1000000065, ...
 
+	now = 1000000010
 	push(`
 foo{pod="b"} 0 1000000009
 `)
 	flush(``)
 
+	now = 1000000025
 	push(`
 foo{pod="a"} 0.5 1000000024
 `)
 	flush(``)
 
+	now = 1000000026
 	push(`
 foo{pod="a"} 0.3 1000000009
 `)
 	flush(``)
 
+	now = 1000000040
 	push(`
 foo{pod="a"} 0.7 1000000039
 foo{pod="b"} 0.4 1000000039
 `)
 	flush(``)
 
+	now = 1000000041
 	push(`
 foo{pod="b"} 0.2 1000000024
 `)
+	now = 1000000055
 	push(`
 foo{pod="a"} 0.7 1000000054
 foo{pod="b"} 0.4 1000000054
 `)
 	flush(``)
+	now = 1000000070
 	push(`
 foo{pod="a"} 0.7 1000000069
 foo{pod="b"} 0.3 1000000069
@@ -321,23 +351,14 @@ foo{pod="b"} 0.3 1000000069
 	flush(`foo:15s_without_pod_total 0.4 1000000035000
 `)
 
-	push(`
-foo{pod="a"} 0.7 1000000084
-foo{pod="b"} 0.3 1000000084
-`)
+	now = 1000000085
 	flush(`foo:15s_without_pod_total 0.8 1000000050000
 `)
 
-	push(`
-foo{pod="a"} 0.7 1000000099
-foo{pod="b"} 0.3 1000000099
-`)
+	now = 1000000100
 	flush(`foo:15s_without_pod_total 0.8 1000000065000
 `)
-	push(`
-foo{pod="a"} 0.7 1000000114
-foo{pod="b"} 0.3 1000000114
-`)
+	now = 1000000115
 	flush(`foo:15s_without_pod_total 1.1 1000000080000
 `)
 }

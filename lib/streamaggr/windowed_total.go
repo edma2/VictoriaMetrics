@@ -1,8 +1,7 @@
 package streamaggr
 
 import (
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fasttime"
-	//"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/metrics"
 	"math"
 	"slices"
@@ -28,6 +27,9 @@ type windowedTotalAggrState struct {
 	// see ignoreFirstSampleDeadline for more details.
 	stalenessSecs uint64
 
+	// Used for testing.
+	getUnixTimestamp func() uint64
+
 	lateSamples *metrics.Counter
 }
 
@@ -36,7 +38,6 @@ type windowedTotalStateValue struct {
 	pendingSamples []pendingSample
 	lastValues     map[string]windowedLastValueState
 	total          float64
-	maxTimestamp   uint64
 	deleteDeadline uint64
 	deleted        bool
 }
@@ -53,17 +54,18 @@ type windowedLastValueState struct {
 	hasFlushed       bool
 }
 
-func newWindowedTotalAggrState(interval, stalenessInterval, maxDelay time.Duration, lateSamples *metrics.Counter) *windowedTotalAggrState {
+func newWindowedTotalAggrState(interval, stalenessInterval, maxDelay time.Duration, getUnixTimestamp func() uint64, lateSamples *metrics.Counter) *windowedTotalAggrState {
 	stalenessSecs := roundDurationToSecs(stalenessInterval)
 	intervalSecs := roundDurationToSecs(interval)
 	maxDelaySecs := roundDurationToSecs(maxDelay)
 	suffix := "total"
 	return &windowedTotalAggrState{
-		suffix:        suffix,
-		intervalSecs:  intervalSecs,
-		maxDelaySecs:  maxDelaySecs,
-		stalenessSecs: stalenessSecs,
-		lateSamples:   lateSamples,
+		suffix:           suffix,
+		intervalSecs:     intervalSecs,
+		maxDelaySecs:     maxDelaySecs,
+		stalenessSecs:    stalenessSecs,
+		getUnixTimestamp: getUnixTimestamp,
+		lateSamples:      lateSamples,
 	}
 }
 
@@ -76,11 +78,22 @@ func roundUp(n, r uint64) uint64 {
 }
 
 func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
-	currentTime := fasttime.UnixTimestamp()
+	currentTime := as.getUnixTimestamp()
+	tooLateDeadline := currentTime - as.maxDelaySecs
 	deleteDeadline := currentTime + as.stalenessSecs
 
 	for i := range samples {
 		s := &samples[i]
+		timestampSecs := uint64(s.timestamp / 1000)
+		if timestampSecs < tooLateDeadline {
+			as.lateSamples.Inc()
+			continue
+		}
+		if timestampSecs > currentTime+5 {
+			logger.Infof("[windowed_total]: sample too far far in future: %d (vs. %d)\n", timestampSecs, currentTime)
+			//	continue
+		}
+
 		inputKey, outputKey := getInputOutputKey(s.key)
 
 	again:
@@ -100,21 +113,10 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 		sv.mu.Lock()
 		deleted := sv.deleted
 		if !deleted {
-			timestampSecs := uint64(s.timestamp / 1000)
-			tooLateDeadline := sv.maxTimestamp - as.maxDelaySecs
-			if sv.maxTimestamp != 0 && timestampSecs < tooLateDeadline {
-				//logger.Infof("Dropped late sample!\n")
-				as.lateSamples.Inc()
-				sv.mu.Unlock()
-				continue
-			}
 			sv.pendingSamples = append(sv.pendingSamples, pendingSample{inputKey, s.value, s.timestamp})
 			lv, _ := sv.lastValues[inputKey]
 			lv.deleteDeadline = deleteDeadline
 			sv.lastValues[inputKey] = lv
-			if timestampSecs > sv.maxTimestamp {
-				sv.maxTimestamp = timestampSecs
-			}
 			sv.deleteDeadline = deleteDeadline
 		}
 		sv.mu.Unlock()
@@ -164,27 +166,25 @@ func compareByTimestamp(a, b pendingSample) int {
 }
 
 func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
-	currentTime := fasttime.UnixTimestamp()
+	currentTime := as.getUnixTimestamp()
+	tooLateDeadline := currentTime - as.maxDelaySecs
+
 	as.removeOldEntries(currentTime)
 
 	m := &as.m
 	m.Range(func(k, v interface{}) bool {
 		sv := v.(*windowedTotalStateValue)
 		sv.mu.Lock()
-		flushDeadline := sv.maxTimestamp - as.maxDelaySecs
 
 		slices.SortFunc(sv.pendingSamples, compareByTimestamp)
 		windows := make(map[uint64]float64)
 		var windowsToFlush []uint64
 		i := 0
-		//logger.Infof("pendingSamples: %v\n", sv.pendingSamples)
-
 		for _, s := range sv.pendingSamples {
 			timestampSecs := uint64(s.timestamp / 1000)
 			windowKey := roundUp(timestampSecs, as.intervalSecs)
-			//logger.Infof("windowKey: %d, flushDeadline: %d\n", windowKey, flushDeadline)
 			// the sample's window is not ready to be flushed
-			if windowKey > flushDeadline {
+			if windowKey > tooLateDeadline {
 				break
 			}
 			lv, ok := sv.lastValues[s.key]
