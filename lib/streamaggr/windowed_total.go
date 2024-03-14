@@ -167,7 +167,7 @@ func compareByTimestamp(a, b pendingSample) int {
 
 func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 	currentTime := as.getUnixTimestamp()
-	tooLateDeadline := currentTime - as.maxDelaySecs
+	flushDeadline := currentTime - as.maxDelaySecs
 
 	as.removeOldEntries(currentTime)
 
@@ -184,7 +184,7 @@ func (as *windowedTotalAggrState) flushState(ctx *flushCtx, resetState bool) {
 			timestampSecs := uint64(s.timestamp / 1000)
 			windowKey := roundUp(timestampSecs, as.intervalSecs)
 			// the sample's window is not ready to be flushed
-			if windowKey > tooLateDeadline {
+			if windowKey > flushDeadline {
 				break
 			}
 			lv, ok := sv.lastValues[s.key]
