@@ -533,8 +533,7 @@ func newAggregator(cfg *Config, pushFunc PushFunc, ms *metrics.Set, opts *Option
 		case "total_prometheus":
 			aggrStates[i] = newTotalAggrState(stalenessInterval, false, false, true)
 		case "total_windowed_prometheus":
-			lateSamples := ms.GetOrCreateCounter(`vm_streamaggr_late_samples_total`)
-			aggrStates[i] = newWindowedTotalAggrState(interval, stalenessInterval, delay, initialDelay, initialDelayInterval, nowFunc, lateSamples)
+			aggrStates[i] = newWindowedTotalAggrState(interval, stalenessInterval, delay, initialDelay, initialDelayInterval, nowFunc, ms)
 		case "increase":
 			aggrStates[i] = newTotalAggrState(stalenessInterval, true, true, false)
 		case "increase_prometheus":

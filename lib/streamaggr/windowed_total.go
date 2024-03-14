@@ -1,7 +1,6 @@
 package streamaggr
 
 import (
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/metrics"
 	"math"
 	"slices"
@@ -39,7 +38,8 @@ type windowedTotalAggrState struct {
 	// Used for testing.
 	nowFunc func() uint64
 
-	lateSamples *metrics.Counter
+	lateSamplesDropped   *metrics.Counter
+	ingestionLatencySecs *metrics.Histogram
 }
 
 type windowedTotalStateValue struct {
@@ -63,13 +63,17 @@ type windowedLastValueState struct {
 	hasFlushed       bool
 }
 
-func newWindowedTotalAggrState(interval, stalenessInterval, delay, initialDelay, initialDelayInterval time.Duration, nowFunc func() uint64, lateSamples *metrics.Counter) *windowedTotalAggrState {
+func newWindowedTotalAggrState(interval, stalenessInterval, delay, initialDelay, initialDelayInterval time.Duration, nowFunc func() uint64, ms *metrics.Set) *windowedTotalAggrState {
 	stalenessSecs := roundDurationToSecs(stalenessInterval)
 	intervalSecs := roundDurationToSecs(interval)
 	delaySecs := roundDurationToSecs(delay)
 	initialDelaySecs := roundDurationToSecs(initialDelay)
 	initialDelayDeadline := nowFunc() + roundDurationToSecs(initialDelayInterval)
 	suffix := "total"
+
+	lateSamplesDropped := ms.GetOrCreateCounter(`vm_streamaggr_late_samples_dropped_total`)
+	ingestionLatencySecs := ms.GetOrCreateHistogram(`vm_streamaggr_ingestion_latency_seconds`)
+
 	return &windowedTotalAggrState{
 		suffix:               suffix,
 		intervalSecs:         intervalSecs,
@@ -78,7 +82,8 @@ func newWindowedTotalAggrState(interval, stalenessInterval, delay, initialDelay,
 		initialDelayDeadline: initialDelayDeadline,
 		stalenessSecs:        stalenessSecs,
 		nowFunc:              nowFunc,
-		lateSamples:          lateSamples,
+		lateSamplesDropped:   lateSamplesDropped,
+		ingestionLatencySecs: ingestionLatencySecs,
 	}
 }
 
@@ -106,13 +111,10 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 	for i := range samples {
 		s := &samples[i]
 		timestampSecs := uint64(s.timestamp / 1000)
+		as.ingestionLatencySecs.Update(float64(currentTime - timestampSecs))
 		if timestampSecs < tooLateDeadline {
-			as.lateSamples.Inc()
+			as.lateSamplesDropped.Inc()
 			continue
-		}
-		if timestampSecs > currentTime+5 {
-			logger.Infof("[windowed_total]: sample too far far in future: %d (vs. %d)\n", timestampSecs, currentTime)
-			//	continue
 		}
 
 		inputKey, outputKey := getInputOutputKey(s.key)

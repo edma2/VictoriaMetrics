@@ -2,6 +2,7 @@ package streamaggr
 
 import (
 	"fmt"
+	"github.com/VictoriaMetrics/metrics"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,7 +26,7 @@ func TestAggregatorInitialDelay(t *testing.T) {
 	delay := interval
 	initialDelay := 3 * time.Minute
 	initialDelayInterval := 2 * time.Minute
-	as := newWindowedTotalAggrState(interval, stalenessInterval, delay, initialDelay, initialDelayInterval, nowFunc, nil)
+	as := newWindowedTotalAggrState(interval, stalenessInterval, delay, initialDelay, initialDelayInterval, nowFunc, metrics.NewSet())
 
 	initialDelaySecs := roundDurationToSecs(initialDelay)
 	delaySecs := roundDurationToSecs(delay)
