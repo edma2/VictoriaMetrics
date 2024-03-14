@@ -111,7 +111,7 @@ func (as *windowedTotalAggrState) pushSamples(samples []pushSample) {
 	for i := range samples {
 		s := &samples[i]
 		timestampSecs := uint64(s.timestamp / 1000)
-		as.ingestionLatencySecs.Update(float64(currentTime - timestampSecs))
+		as.ingestionLatencySecs.Update(float64(currentTime) - float64(timestampSecs))
 		if timestampSecs < tooLateDeadline {
 			as.lateSamplesDropped.Inc()
 			continue
