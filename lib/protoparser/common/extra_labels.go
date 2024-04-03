@@ -29,6 +29,13 @@ func GetExtraLabels(req *http.Request) ([]prompbmarshal.Label, error) {
 			Value: tmp[1],
 		})
 	}
+	orgID := req.Header.Get("X-Scope-OrgID")
+	if orgID != "" {
+		labels = append(labels, prompbmarshal.Label{
+			Name:  "x_scope_org_id",
+			Value: orgID,
+		})
+	}
 	return labels, nil
 }
 

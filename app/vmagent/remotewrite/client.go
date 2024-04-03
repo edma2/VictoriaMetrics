@@ -81,6 +81,7 @@ var (
 type client struct {
 	sanitizedURL   string
 	remoteWriteURL string
+	orgID          string
 
 	// Whether to use VictoriaMetrics remote write protocol for sending the data to remoteWriteURL
 	useVMProto bool
@@ -108,20 +109,12 @@ type client struct {
 	stopCh chan struct{}
 }
 
-func newHTTPClient(argIdx int, remoteWriteURL, sanitizedURL string, fq *persistentqueue.FastQueue, concurrency int) *client {
-	authCfg, err := getAuthConfig(argIdx)
-	if err != nil {
-		logger.Fatalf("cannot initialize auth config for -remoteWrite.url=%q: %s", remoteWriteURL, err)
-	}
-	awsCfg, err := getAWSAPIConfig(argIdx)
-	if err != nil {
-		logger.Fatalf("cannot initialize AWS Config for -remoteWrite.url=%q: %s", remoteWriteURL, err)
-	}
+func newHTTPClient(argIdx int, authCfg *promauth.Config, remoteWriteURL string, maxConnections int) *http.Client {
 	tr := &http.Transport{
 		DialContext:         statDial,
 		TLSHandshakeTimeout: tlsHandshakeTimeout.GetOptionalArg(argIdx),
-		MaxConnsPerHost:     2 * concurrency,
-		MaxIdleConnsPerHost: 2 * concurrency,
+		MaxConnsPerHost:     maxConnections,
+		MaxIdleConnsPerHost: maxConnections,
 		IdleConnTimeout:     time.Minute,
 		WriteBufferSize:     64 * 1024,
 	}
@@ -140,6 +133,14 @@ func newHTTPClient(argIdx int, remoteWriteURL, sanitizedURL string, fq *persiste
 		Transport: authCfg.NewRoundTripper(tr),
 		Timeout:   sendTimeout.GetOptionalArg(argIdx),
 	}
+	return hc
+}
+
+func newClient(argIdx int, authCfg *promauth.Config, hc *http.Client, remoteWriteURL, sanitizedURL string, fq *persistentqueue.FastQueue, concurrency int, orgID string) *client {
+	awsCfg, err := getAWSAPIConfig(argIdx)
+	if err != nil {
+		logger.Fatalf("cannot initialize AWS Config for -remoteWrite.url=%q: %s", remoteWriteURL, err)
+	}
 	c := &client{
 		sanitizedURL:   sanitizedURL,
 		remoteWriteURL: remoteWriteURL,
@@ -148,6 +149,7 @@ func newHTTPClient(argIdx int, remoteWriteURL, sanitizedURL string, fq *persiste
 		fq:             fq,
 		hc:             hc,
 		stopCh:         make(chan struct{}),
+		orgID:          orgID,
 	}
 	c.sendBlock = c.sendBlockHTTP
 
@@ -376,6 +378,9 @@ func (c *client) newRequest(url string, body []byte) (*http.Request, error) {
 	} else {
 		h.Set("Content-Encoding", "snappy")
 		h.Set("X-Prometheus-Remote-Write-Version", "0.1.0")
+	}
+	if c.orgID != "" {
+		h.Set("X-Scope-OrgID", c.orgID)
 	}
 	if c.awsCfg != nil {
 		sigv4Hash := awsapi.HashHex(body)

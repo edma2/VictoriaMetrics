@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,12 +25,12 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/memory"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/persistentqueue"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/procutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promauth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promrelabel"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/promutils"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/ratelimiter"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/streamaggr"
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/tenantmetrics"
 	"github.com/VictoriaMetrics/metrics"
 	"github.com/cespare/xxhash/v2"
 )
@@ -108,6 +109,7 @@ var (
 		"See also -remoteWrite.dropSamplesOnOverload")
 	dropSamplesOnOverload = flag.Bool("remoteWrite.dropSamplesOnOverload", false, "Whether to drop samples when -remoteWrite.disableOnDiskQueue is set and if the samples "+
 		"cannot be pushed into the configured remote storage systems in a timely manner. See https://docs.victoriametrics.com/vmagent.html#disabling-on-disk-persistence")
+	propagateOrgID = flag.Bool("remoteWrite.propagateOrgID", false, "Whether to set X-Scope-OrgID header based on x_scope_org_id label")
 )
 
 var (
@@ -115,7 +117,7 @@ var (
 	rwctxsDefault []*remoteWriteCtx
 
 	// rwctxsMap contains dynamically populated entries when -remoteWrite.multitenantURL is specified.
-	rwctxsMap     = make(map[tenantmetrics.TenantID][]*remoteWriteCtx)
+	rwctxsMap     = make(map[string][]*remoteWriteCtx)
 	rwctxsMapLock sync.Mutex
 
 	// Data without tenant id is written to defaultAuthToken if -remoteWrite.multitenantURL is specified.
@@ -128,6 +130,10 @@ var (
 			"see https://docs.victoriametrics.com/vmagent.html#disabling-on-disk-persistence"),
 		StatusCode: http.StatusTooManyRequests,
 	}
+
+	authCfgs []*promauth.Config
+	// HTTP clients are shared for each remote-write URL
+	httpClients []*http.Client
 )
 
 // MultitenancyEnabled returns true if -enableMultitenantHandlers or -remoteWrite.multitenantURL is specified.
@@ -217,9 +223,22 @@ func Init() {
 	relabelConfigSuccess.Set(1)
 	relabelConfigTimestamp.Set(fasttime.UnixTimestamp())
 
-	if len(*remoteWriteURLs) > 0 {
-		rwctxsDefault = newRemoteWriteCtxs(nil, *remoteWriteURLs)
+	authCfgs = make([]*promauth.Config, len(*remoteWriteURLs))
+	httpClients = make([]*http.Client, len(*remoteWriteURLs))
+	for i, url := range *remoteWriteURLs {
+		authCfg, err := getAuthConfig(i)
+		if err != nil {
+			logger.Fatalf("cannot initialize auth config for -remoteWrite.url=%q: %s", url, err)
+		}
+		authCfgs[i] = authCfg
+		httpClients[i] = newHTTPClient(i, authCfg, url, *queues*2)
+		logger.Infof("initialized HTTP client for %s", url)
 	}
+
+	if len(*remoteWriteURLs) > 0 {
+		rwctxsDefault = newRemoteWriteCtxs(nil, *remoteWriteURLs, "")
+	}
+
 	dropDanglingQueues()
 
 	// Start config reloader.
@@ -315,7 +334,7 @@ func reinitStreamAggr(rwctxs []*remoteWriteCtx) {
 	}
 }
 
-func newRemoteWriteCtxs(at *auth.Token, urls []string) []*remoteWriteCtx {
+func newRemoteWriteCtxs(at *auth.Token, urls []string, orgID string) []*remoteWriteCtx {
 	if len(urls) == 0 {
 		logger.Panicf("BUG: urls must be non-empty")
 	}
@@ -345,7 +364,10 @@ func newRemoteWriteCtxs(at *auth.Token, urls []string) []*remoteWriteCtx {
 		if *showRemoteWriteURL {
 			sanitizedURL = fmt.Sprintf("%d:%s", i+1, remoteWriteURL)
 		}
-		rwctxs[i] = newRemoteWriteCtx(i, remoteWriteURL, maxInmemoryBlocks, sanitizedURL)
+		if orgID != "" {
+			sanitizedURL = fmt.Sprintf("%s:%s", sanitizedURL, orgID)
+		}
+		rwctxs[i] = newRemoteWriteCtx(i, remoteWriteURL, maxInmemoryBlocks, sanitizedURL, orgID)
 	}
 	return rwctxs
 }
@@ -417,7 +439,7 @@ func Stop() {
 //
 // PushDropSamplesOnFailure can modify wr contents.
 func PushDropSamplesOnFailure(at *auth.Token, wr *prompbmarshal.WriteRequest) {
-	_ = tryPush(at, wr, true)
+	_ = tryPush(at, wr, true, "")
 }
 
 // TryPush tries sending wr to the configured remote storage systems set via -remoteWrite.url and -remoteWrite.multitenantURL
@@ -430,10 +452,34 @@ func PushDropSamplesOnFailure(at *auth.Token, wr *prompbmarshal.WriteRequest) {
 //
 // The caller must return ErrQueueFullHTTPRetry to the client, which sends wr, if TryPush returns false.
 func TryPush(at *auth.Token, wr *prompbmarshal.WriteRequest) bool {
-	return tryPush(at, wr, *dropSamplesOnOverload)
+	if *propagateOrgID {
+		requestsByOrgID := make(map[string]*prompbmarshal.WriteRequest)
+		for _, ts := range wr.Timeseries {
+			for _, label := range ts.Labels {
+				if label.Name == "x_scope_org_id" {
+					orgID := label.Value
+					wr, ok := requestsByOrgID[orgID]
+					if !ok {
+						wr = &prompbmarshal.WriteRequest{}
+						requestsByOrgID[orgID] = wr
+					}
+					wr.Timeseries = append(wr.Timeseries, ts)
+					break
+				}
+			}
+		}
+		success := true
+		for orgID, wr := range requestsByOrgID {
+			if !tryPush(at, wr, *dropSamplesOnOverload, orgID) {
+				success = false
+			}
+		}
+		return success
+	}
+	return tryPush(at, wr, *dropSamplesOnOverload, "")
 }
 
-func tryPush(at *auth.Token, wr *prompbmarshal.WriteRequest, dropSamplesOnFailure bool) bool {
+func tryPush(at *auth.Token, wr *prompbmarshal.WriteRequest, dropSamplesOnFailure bool, orgID string) bool {
 	tss := wr.Timeseries
 
 	if at == nil && MultitenancyEnabled() {
@@ -443,7 +489,20 @@ func tryPush(at *auth.Token, wr *prompbmarshal.WriteRequest, dropSamplesOnFailur
 
 	var tenantRctx *relabelCtx
 	var rwctxs []*remoteWriteCtx
-	if at == nil {
+	if orgID != "" {
+		rwctxsMapLock.Lock()
+		rwctxs = rwctxsMap[orgID]
+		if rwctxs == nil {
+			rwctxs = newRemoteWriteCtxs(at, *remoteWriteURLs, orgID)
+			// Create a copy since original might refer to a shared byte pool that mutates across requests.
+			orgID = strings.Clone(orgID)
+			rwctxsMap[orgID] = rwctxs
+		}
+		rwctxsMapLock.Unlock()
+		// Drop x_scope_org_id label since we only use it for mapping tenants to remoteWriteCtx
+		tenantRctx = getRelabelCtx()
+		defer putRelabelCtx(tenantRctx)
+	} else if at == nil {
 		rwctxs = rwctxsDefault
 	} else if len(*remoteWriteMultitenantURLs) == 0 {
 		// Convert at to (vm_account_id, vm_project_id) labels.
@@ -452,13 +511,10 @@ func tryPush(at *auth.Token, wr *prompbmarshal.WriteRequest, dropSamplesOnFailur
 		rwctxs = rwctxsDefault
 	} else {
 		rwctxsMapLock.Lock()
-		tenantID := tenantmetrics.TenantID{
-			AccountID: at.AccountID,
-			ProjectID: at.ProjectID,
-		}
+		tenantID := at.String()
 		rwctxs = rwctxsMap[tenantID]
 		if rwctxs == nil {
-			rwctxs = newRemoteWriteCtxs(at, *remoteWriteMultitenantURLs)
+			rwctxs = newRemoteWriteCtxs(at, *remoteWriteMultitenantURLs, "")
 			rwctxsMap[tenantID] = rwctxs
 		}
 		rwctxsMapLock.Unlock()
@@ -519,7 +575,11 @@ func tryPush(at *auth.Token, wr *prompbmarshal.WriteRequest, dropSamplesOnFailur
 			tss = nil
 		}
 		if tenantRctx != nil {
-			tenantRctx.tenantToLabels(tssBlock, at.AccountID, at.ProjectID)
+			if orgID != "" {
+				tenantRctx.dropOrgIDLabel(tssBlock)
+			} else {
+				tenantRctx.tenantToLabels(tssBlock, at.AccountID, at.ProjectID)
+			}
 		}
 		if rctx != nil {
 			rowsCountBeforeRelabel := getRowsCount(tssBlock)
@@ -736,12 +796,12 @@ type remoteWriteCtx struct {
 	rowsDroppedByRelabel   *metrics.Counter
 }
 
-func newRemoteWriteCtx(argIdx int, remoteWriteURL *url.URL, maxInmemoryBlocks int, sanitizedURL string) *remoteWriteCtx {
+func newRemoteWriteCtx(argIdx int, remoteWriteURL *url.URL, maxInmemoryBlocks int, sanitizedURL, orgID string) *remoteWriteCtx {
 	// strip query params, otherwise changing params resets pq
 	pqURL := *remoteWriteURL
 	pqURL.RawQuery = ""
 	pqURL.Fragment = ""
-	h := xxhash.Sum64([]byte(pqURL.String()))
+	h := xxhash.Sum64([]byte(pqURL.String() + orgID))
 	queuePath := filepath.Join(*tmpDataPath, persistentQueueDirname, fmt.Sprintf("%d_%016X", argIdx+1, h))
 	maxPendingBytes := maxPendingBytesPerURL.GetOptionalArg(argIdx)
 	if maxPendingBytes != 0 && maxPendingBytes < persistentqueue.DefaultChunkFileSize {
@@ -766,7 +826,7 @@ func newRemoteWriteCtx(argIdx int, remoteWriteURL *url.URL, maxInmemoryBlocks in
 	var c *client
 	switch remoteWriteURL.Scheme {
 	case "http", "https":
-		c = newHTTPClient(argIdx, remoteWriteURL.String(), sanitizedURL, fq, *queues)
+		c = newClient(argIdx, authCfgs[argIdx], httpClients[argIdx], remoteWriteURL.String(), sanitizedURL, fq, *queues, orgID)
 	default:
 		logger.Fatalf("unsupported scheme: %s for remoteWriteURL: %s, want `http`, `https`", remoteWriteURL.Scheme, sanitizedURL)
 	}

@@ -170,6 +170,23 @@ func (rctx *relabelCtx) tenantToLabels(tss []prompbmarshal.TimeSeries, accountID
 	rctx.labels = labels
 }
 
+func (rctx *relabelCtx) dropOrgIDLabel(tss []prompbmarshal.TimeSeries) {
+	rctx.reset()
+	labels := rctx.labels[:0]
+	for i := range tss {
+		ts := &tss[i]
+		labelsLen := len(labels)
+		for _, label := range ts.Labels {
+			if label.Name == "x_scope_org_id" {
+				continue
+			}
+			labels = append(labels, label)
+		}
+		ts.Labels = labels[labelsLen:]
+	}
+	rctx.labels = labels
+}
+
 type relabelCtx struct {
 	// pool for labels, which are used during the relabeling.
 	labels []prompbmarshal.Label
