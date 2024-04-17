@@ -493,9 +493,9 @@ func tryPush(at *auth.Token, wr *prompbmarshal.WriteRequest, dropSamplesOnFailur
 		rwctxsMapLock.Lock()
 		rwctxs = rwctxsMap[orgID]
 		if rwctxs == nil {
-			rwctxs = newRemoteWriteCtxs(at, *remoteWriteURLs, orgID)
 			// Create a copy since original might refer to a shared byte pool that mutates across requests.
 			orgID = strings.Clone(orgID)
+			rwctxs = newRemoteWriteCtxs(at, *remoteWriteURLs, orgID)
 			rwctxsMap[orgID] = rwctxs
 		}
 		rwctxsMapLock.Unlock()
